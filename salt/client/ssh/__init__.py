@@ -138,7 +138,7 @@ if not is_windows():
     if not os.path.exists(shim_file):
         # On esky builds we only have the .pyc file
         shim_file += "c"
-    with open(shim_file) as ssh_py_shim:
+    with salt.utils.fopen(shim_file) as ssh_py_shim:
         SSH_PY_SHIM = ssh_py_shim.read()
 
 log = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ class SSH(object):
                     )
                 )
         pub = '{0}.pub'.format(priv)
-        with open(pub, 'r') as fp_:
+        with salt.utils.fopen(pub, 'r') as fp_:
             return '{0} rsa root@master'.format(fp_.read().split()[1])
 
     def key_deploy(self, host, ret):
@@ -298,7 +298,7 @@ class SSH(object):
                 if stderr:
                     return {host: stderr}
                 return {host: 'Bad Return'}
-        if os.EX_OK != retcode:
+        if salt.exitcodes.EX_OK != retcode:
             return {host: stderr}
         return {host: stdout}
 
@@ -677,6 +677,7 @@ class Single(object):
             opts_pkg['file_roots'] = self.opts['file_roots']
             opts_pkg['pillar_roots'] = self.opts['pillar_roots']
             opts_pkg['ext_pillar'] = self.opts['ext_pillar']
+            opts_pkg['extension_modules'] = self.opts['extension_modules']
             opts_pkg['_ssh_version'] = self.opts['_ssh_version']
             if '_caller_cachedir' in self.opts:
                 opts_pkg['_caller_cachedir'] = self.opts['_caller_cachedir']
@@ -910,7 +911,7 @@ ARGS = {8}\n'''.format(self.minion_config,
                 'The salt thin transfer was corrupted'
             ),
             (
-                (os.EX_CANTCREAT,),
+                (salt.exitcodes.EX_CANTCREAT,),
                 'salt path .* exists but is not a directory',
                 'A necessary path for salt thin unexpectedly exists:\n ' + stderr,
             ),
@@ -935,7 +936,7 @@ ARGS = {8}\n'''.format(self.minion_config,
                 perm_error_fmt.format(stderr)
             ),
             (
-                (os.EX_SOFTWARE,),
+                (salt.exitcodes.EX_SOFTWARE,),
                 'exists but is not',
                 'An internal error occurred with the shim, please investigate:\n ' + stderr,
             ),
