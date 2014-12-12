@@ -73,7 +73,6 @@ import salt.loader
 import salt.state
 import salt.utils
 import salt.utils.cache
-import salt.utils.process
 from salt._compat import string_types
 log = logging.getLogger(__name__)
 
@@ -253,7 +252,7 @@ class SaltEvent(object):
             mtag = raw[0:20].rstrip('|')
             mdata = raw[20:]
         else:  # new style
-            mtag, _, mdata = raw.partition(TAGEND)  # split tag from data
+            mtag, sep, mdata = raw.partition(TAGEND)  # split tag from data
 
         data = serial.loads(mdata)
         return mtag, data
@@ -290,8 +289,9 @@ class SaltEvent(object):
                 continue
 
             try:
-                ret = self.get_event_block()  # Please do not use non-blocking mode here.
-                                              # Reliability is more important than pure speed on the event bus.
+                # Please do not use non-blocking mode here.
+                # Reliability is more important than pure speed on the event bus.
+                ret = self.get_event_block()
             except zmq.ZMQError as ex:
                 if ex.errno == errno.EAGAIN or ex.errno == errno.EINTR:
                     continue
@@ -699,11 +699,6 @@ class ReactWrap(object):
         if ReactWrap.client_cache is None:
             ReactWrap.client_cache = salt.utils.cache.CacheDict(opts['reactor_refresh_interval'])
 
-        self.pool = salt.utils.process. ThreadPool(
-                        self.opts['reactor_worker_threads'],  # number of workers for runner/wheel
-                        queue_size=self.opts['reactor_worker_hwm']  # queue size for those workers
-                    )
-
     def run(self, low):
         '''
         Execute the specified function in the specified state by passing the
@@ -712,12 +707,14 @@ class ReactWrap(object):
         l_fun = getattr(self, low['state'])
         try:
             f_call = salt.utils.format_call(l_fun, low)
-            l_fun(*f_call.get('args', ()), **f_call.get('kwargs', {}))
+            ret = l_fun(*f_call.get('args', ()), **f_call.get('kwargs', {}))
         except Exception:
             log.error(
                     'Failed to execute {0}: {1}\n'.format(low['state'], l_fun),
                     exc_info=True
                     )
+            return False
+        return ret
 
     def local(self, *args, **kwargs):
         '''
@@ -725,25 +722,25 @@ class ReactWrap(object):
         '''
         if 'local' not in self.client_cache:
             self.client_cache['local'] = salt.client.LocalClient(self.opts['conf_file'])
-        self.client_cache['local'].cmd_async(*args, **kwargs)
+        return self.client_cache['local'].cmd_async(*args, **kwargs)
 
     cmd = local
 
-    def runner(self, _, **kwargs):
+    def runner(self, fun, **kwargs):
         '''
         Wrap RunnerClient for executing :ref:`runner modules <all-salt.runners>`
         '''
         if 'runner' not in self.client_cache:
             self.client_cache['runner'] = salt.runner.RunnerClient(self.opts)
-        self.pool.fire_async(self.client_cache['runner'].low, kwargs)
+        return self.client_cache['runner'].async(fun, kwargs, fire_event=False)
 
-    def wheel(self, _, **kwargs):
+    def wheel(self, fun, **kwargs):
         '''
         Wrap Wheel to enable executing :ref:`wheel modules <all-salt.wheel>`
         '''
         if 'wheel' not in self.client_cache:
             self.client_cache['wheel'] = salt.wheel.Wheel(self.opts)
-        self.pool.fire_async(self.client_cache['wheel'].low, kwargs)
+        return self.client_cache['wheel'].async(fun, kwargs, fire_event=False)
 
 
 class StateFire(object):

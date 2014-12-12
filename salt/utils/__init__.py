@@ -98,6 +98,7 @@ except ImportError:
 
 # Import salt libs
 import salt._compat
+import salt.exitcodes
 import salt.log
 import salt.payload
 import salt.version
@@ -274,7 +275,7 @@ def daemonize(redirect_out=True):
         pid = os.fork()
         if pid > 0:
             # exit first parent
-            sys.exit(os.EX_OK)
+            sys.exit(salt.exitcodes.EX_OK)
     except OSError as exc:
         log.error(
             'fork #1 failed: {0} ({1})'.format(exc.errno, exc.strerror)
@@ -291,7 +292,7 @@ def daemonize(redirect_out=True):
     try:
         pid = os.fork()
         if pid > 0:
-            sys.exit(os.EX_OK)
+            sys.exit(salt.exitcodes.EX_OK)
     except OSError as exc:
         log.error(
             'fork #2 failed: {0} ({1})'.format(
@@ -1090,7 +1091,7 @@ def flopen(*args, **kwargs):
                 fcntl.flock(fp_.fileno(), fcntl.LOCK_UN)
 
 
-def expr_match(expr, line):
+def expr_match(line, expr):
     '''
     Evaluate a line of text against an expression. First try a full-string
     match, next try globbing, and then try to match assuming expr is a regular
@@ -1357,6 +1358,14 @@ def is_sunos():
     Simple function to return if host is SunOS or not
     '''
     return sys.platform.startswith('sunos')
+
+
+@real_memoize
+def is_freebsd():
+    '''
+    Simple function to return if host is FreeBSD or not
+    '''
+    return sys.platform.startswith('freebsd')
 
 
 def is_fcntl_available(check_sunos=False):
