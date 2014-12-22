@@ -18,7 +18,8 @@ import copy
 import logging
 import os
 import re
-from distutils.version import LooseVersion as _LooseVersion
+from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=import-error,no-name-in-module
+
 try:
     from shlex import quote as _cmd_quote  # pylint: disable=E0611
 except ImportError:
@@ -1429,7 +1430,7 @@ def group_info(name):
         'default packages': [],
         'description': ''
     }
-    cmd_template = 'repoquery --plugins --group --grouppkgs={0} --list {1!r}'
+    cmd_template = 'repoquery --plugins --group --grouppkgs={0} --list {1}'
 
     cmd = cmd_template.format('all', _cmd_quote(name))
     out = __salt__['cmd.run_stdout'](cmd, output_loglevel='trace')
@@ -1453,7 +1454,7 @@ def group_info(name):
     # considered to be conditional packages.
     ret['conditional packages'] = sorted(all_pkgs)
 
-    cmd = 'repoquery --plugins --group --info {0!r}'.format(_cmd_quote(name))
+    cmd = 'repoquery --plugins --group --info {0}'.format(_cmd_quote(name))
     out = __salt__['cmd.run_stdout'](
             cmd, output_loglevel='trace'
             )

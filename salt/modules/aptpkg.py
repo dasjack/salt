@@ -544,9 +544,11 @@ def _uninstall(action='remove', name=None, pkgs=None, **kwargs):
         return {}
     cmd = ['apt-get', '-q', '-y', action]
     cmd.extend(targets)
+    env = _parse_env(kwargs.get('env'))
+    env.update(DPKG_ENV_VARS.copy())
     __salt__['cmd.run'](
         cmd,
-        env=kwargs.get('env'),
+        env=env,
         python_shell=False,
         output_loglevel='trace'
     )
@@ -1060,6 +1062,7 @@ def _consolidate_repo_sources(sources):
     repos = [s for s in sources.list if not s.invalid]
 
     for repo in repos:
+        repo.uri = repo.uri.rstrip('/')
         key = str((getattr(repo, 'architectures', []),
                    repo.disabled, repo.type, repo.uri))
         if key in consolidated:
@@ -1067,7 +1070,7 @@ def _consolidate_repo_sources(sources):
             combined_comps = set(repo.comps).union(set(combined.comps))
             consolidated[key].comps = list(combined_comps)
         else:
-            consolidated[key] = sourceslist.SourceEntry(repo.line)
+            consolidated[key] = sourceslist.SourceEntry(_strip_uri(repo.line))
 
         if repo.file != base_file:
             delete_files.add(repo.file)
