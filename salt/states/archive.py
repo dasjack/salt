@@ -186,13 +186,29 @@ def extracted(name,
         else:
             log.debug('Untar {0} in {1}'.format(filename, name))
 
-            results = __salt__['cmd.run_all']('tar x{0} -f {1!r}'.format(
-                tar_options, filename), cwd=name)
+            tar_opts = tar_options.split(' ')
+
+            tar_cmd = ['tar']
+            tar_shortopts = 'x'
+            tar_longopts = []
+
+            for opt in tar_opts:
+                if not opt.startswith('-'):
+                    if opt not in ['x', 'f']:
+                        tar_shortopts = tar_shortopts + opt
+                else:
+                    tar_longopts.append(opt)
+
+            tar_cmd.append(tar_shortopts)
+            tar_cmd.extend(tar_longopts)
+            tar_cmd.extend(['-f', filename])
+
+            results = __salt__['cmd.run_all'](tar_cmd, cwd=name, python_shell=False)
             if results['retcode'] != 0:
                 ret['result'] = False
                 ret['changes'] = results
                 return ret
-            if __salt__['cmd.retcode']('tar --version | grep bsdtar') == 0:
+            if __salt__['cmd.retcode']('tar --version | grep bsdtar', python_shell=True) == 0:
                 files = results['stderr']
             else:
                 files = results['stdout']

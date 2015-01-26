@@ -345,7 +345,8 @@ def hypermedia_handler(*args, **kwargs):
     try:
         cherrypy.response.processors = dict(ct_out_map)
         ret = cherrypy.serving.request._hypermedia_inner_handler(*args, **kwargs)
-    except salt.exceptions.EauthAuthenticationError:
+    except (salt.exceptions.EauthAuthenticationError,
+            salt.exceptions.TokenAuthenticationError):
         raise cherrypy.HTTPError(401)
     except cherrypy.CherryPyException:
         raise
@@ -958,10 +959,20 @@ class Jobs(LowDataAdapter):
 
 
 class Keys(LowDataAdapter):
+    '''
+    Convenience URLs for working with minion keys
+
+    .. versionadded:: 2014.7.0
+
+    These URLs wrap the functionality provided by the :py:module:`key wheel
+    module <salt.wheel.key>` functions.
+    '''
+
     def GET(self, mid=None):
         '''
-        A convenience URL for showing the list of minion keys or detail on a
-        specific key
+        Show the list of minion keys or detail on a specific key
+
+        .. versionadded:: 2014.7.0
 
         .. http:get:: /keys/(mid)
 
@@ -1046,6 +1057,8 @@ class Keys(LowDataAdapter):
     def POST(self, mid, keysize=None, force=None, **kwargs):
         r'''
         Easily generate keys for a minion and auto-accept the new key
+
+        .. versionadded:: 2014.7.0
 
         Example partial kickstart script to bootstrap a new minion:
 

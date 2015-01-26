@@ -50,6 +50,7 @@ def _git_run(cmd, cwd=None, runas=None, identity=None, **kwargs):
                                              cwd=cwd,
                                              runas=runas,
                                              env=env,
+                                             python_shell=False,
                                              **kwargs)
 
             # if the command was successful, no need to try additional IDs
@@ -66,13 +67,16 @@ def _git_run(cmd, cwd=None, runas=None, identity=None, **kwargs):
                                          cwd=cwd,
                                          runas=runas,
                                          env=env,
+                                         python_shell=False,
                                          **kwargs)
         retcode = result['retcode']
 
         if retcode == 0:
             return result['stdout']
         else:
-            raise CommandExecutionError(result['stderr'])
+            raise CommandExecutionError(
+                'Command {0!r} failed. Stderr: {1!r}'.format(cmd,
+                                                             result['stderr']))
 
 
 def _git_getdir(cwd, user=None):
@@ -201,7 +205,10 @@ def describe(cwd, rev='HEAD', user=None):
         salt '*' git.describe /path/to/repo develop
     '''
     cmd = 'git describe {0}'.format(rev)
-    return __salt__['cmd.run_stdout'](cmd, cwd=cwd, runas=user)
+    return __salt__['cmd.run_stdout'](cmd,
+                                      cwd=cwd,
+                                      runas=user,
+                                      python_shell=False)
 
 
 def archive(cwd, output, rev='HEAD', fmt=None, prefix=None, user=None):

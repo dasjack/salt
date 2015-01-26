@@ -149,13 +149,6 @@ def _parse_ethtool_opts(opts, iface):
         else:
             _raise_error_iface(iface, 'duplex', valid)
 
-    if 'mtu' in opts:
-        try:
-            int(opts['mtu'])
-            config.update({'mtu': opts['mtu']})
-        except Exception:
-            _raise_error_iface(iface, 'mtu', ['integer'])
-
     if 'speed' in opts:
         valid = ['10', '100', '1000', '10000']
         if str(opts['speed']) in valid:
@@ -562,6 +555,12 @@ def _parse_settings_eth(opts, iface_type, enabled, iface):
         result['dns'] = opts['dns']
         result['peerdns'] = 'yes'
 
+    if 'mtu' in opts:
+        try:
+            result['mtu'] = int(opts['mtu'])
+        except Exception:
+            _raise_error_iface(iface, 'mtu', ['integer'])
+
     if iface_type not in ['bridge']:
         ethtool = _parse_ethtool_opts(opts, iface)
         if ethtool:
@@ -831,10 +830,12 @@ def build_bond(iface, **settings):
     path = os.path.join(_RH_NETWORK_CONF_FILES, '{0}.conf'.format(iface))
     if rh_major == '5':
         __salt__['cmd.run'](
-            'sed -i -e "/^alias\\s{0}.*/d" /etc/modprobe.conf'.format(iface)
+            'sed -i -e "/^alias\\s{0}.*/d" /etc/modprobe.conf'.format(iface),
+            python_shell=False
         )
         __salt__['cmd.run'](
-            'sed -i -e "/^options\\s{0}.*/d" /etc/modprobe.conf'.format(iface)
+            'sed -i -e "/^options\\s{0}.*/d" /etc/modprobe.conf'.format(iface),
+            python_shell=False
         )
         __salt__['file.append']('/etc/modprobe.conf', path)
     __salt__['kmod.load']('bonding')

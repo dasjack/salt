@@ -640,7 +640,7 @@ def mount(name, device, mkmnt=False, fstype='', opts='defaults', user=None):
     if fstype:
         args += ' -t {0}'.format(fstype)
     cmd = 'mount {0} {1} {2} '.format(args, device, name)
-    out = __salt__['cmd.run_all'](cmd, runas=user)
+    out = __salt__['cmd.run_all'](cmd, runas=user, python_shell=False)
     if out['retcode']:
         return out['stderr']
     return True
@@ -682,7 +682,7 @@ def remount(name, device, mkmnt=False, fstype='', opts='defaults', user=None):
             cmd = 'mount {0} {1} {2} '.format(args, device, name)
         else:
             cmd = 'mount -u {0} {1} {2} '.format(args, device, name)
-        out = __salt__['cmd.run_all'](cmd, runas=user)
+        out = __salt__['cmd.run_all'](cmd, runas=user, python_shell=False)
         if out['retcode']:
             return out['stderr']
         return True
@@ -712,7 +712,7 @@ def umount(name, device=None, user=None):
         cmd = 'umount {0}'.format(name)
     else:
         cmd = 'umount {0}'.format(device)
-    out = __salt__['cmd.run_all'](cmd, runas=user)
+    out = __salt__['cmd.run_all'](cmd, runas=user, python_shell=False)
     if out['retcode']:
         return out['stderr']
     return True
@@ -736,7 +736,7 @@ def is_fuse_exec(cmd):
     elif not _which('ldd'):
         raise CommandNotFoundError('ldd')
 
-    out = __salt__['cmd.run']('ldd {0}'.format(cmd_path))
+    out = __salt__['cmd.run']('ldd {0}'.format(cmd_path), python_shell=False)
     return 'libfuse' in out
 
 
@@ -795,7 +795,7 @@ def swapon(name, priority=None):
     cmd = 'swapon {0}'.format(name)
     if priority:
         cmd += ' -p {0}'.format(priority)
-    __salt__['cmd.run'](cmd)
+    __salt__['cmd.run'](cmd, python_shell=False)
     on_ = swaps()
     if name in on_:
         ret['stats'] = on_[name]
@@ -817,9 +817,9 @@ def swapoff(name):
     on_ = swaps()
     if name in on_:
         if __grains__['os'] != 'OpenBSD':
-            __salt__['cmd.run']('swapoff {0}'.format(name))
+            __salt__['cmd.run']('swapoff {0}'.format(name), python_shell=False)
         else:
-            __salt__['cmd.run']('swapctl -d {0}'.format(name))
+            __salt__['cmd.run']('swapctl -d {0}'.format(name), python_shell=False)
         on_ = swaps()
         if name in on_:
             return False

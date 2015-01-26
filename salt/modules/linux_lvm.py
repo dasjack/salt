@@ -70,7 +70,7 @@ def pvdisplay(pvname=''):
     '''
     ret = {}
     cmd = 'pvdisplay -c {0}'.format(pvname)
-    cmd_ret = __salt__['cmd.run_all'](cmd)
+    cmd_ret = __salt__['cmd.run_all'](cmd, python_shell=False)
 
     if cmd_ret['retcode'] != 0:
         return {}
@@ -108,7 +108,7 @@ def vgdisplay(vgname=''):
     '''
     ret = {}
     cmd = 'vgdisplay -c {0}'.format(vgname)
-    cmd_ret = __salt__['cmd.run_all'](cmd)
+    cmd_ret = __salt__['cmd.run_all'](cmd, python_shell=False)
 
     if cmd_ret['retcode'] != 0:
         return {}
@@ -151,7 +151,7 @@ def lvdisplay(lvname=''):
     '''
     ret = {}
     cmd = 'lvdisplay -c {0}'.format(lvname)
-    cmd_ret = __salt__['cmd.run_all'](cmd)
+    cmd_ret = __salt__['cmd.run_all'](cmd, python_shell=False)
 
     if cmd_ret['retcode'] != 0:
         return {}
@@ -203,7 +203,7 @@ def pvcreate(devices, **kwargs):
     for var in kwargs:
         if kwargs[var] and var in valid:
             cmd += ' --{0} {1}'.format(var, kwargs[var])
-    out = __salt__['cmd.run'](cmd).splitlines()
+    out = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     return out[0]
 
 
@@ -222,7 +222,7 @@ def pvremove(devices):
         if not __salt__['lvm.pvdisplay'](device):
             return '{0} is not a physical volume'.format(device)
         cmd += ' {0}'.format(device)
-    out = __salt__['cmd.run'](cmd).splitlines()
+    out = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     return out[0]
 
 
@@ -248,7 +248,7 @@ def vgcreate(vgname, devices, **kwargs):
     for var in kwargs:
         if kwargs[var] and var in valid:
             cmd += ' --{0} {1}'.format(var, kwargs[var])
-    out = __salt__['cmd.run'](cmd).splitlines()
+    out = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     vgdata = vgdisplay(vgname)
     vgdata['Output from vgcreate'] = out[0].strip()
     return vgdata
@@ -263,11 +263,11 @@ def lvcreate(lvname, vgname, size=None, extents=None, snapshot=None, pv=None, **
     .. code-block:: bash
 
         salt '*' lvm.lvcreate new_volume_name vg_name size=10G
-        salt '*' lvm.lvcreate new_volume_name vg_name extents=100 /dev/sdb
+        salt '*' lvm.lvcreate new_volume_name vg_name extents=100 pv=/dev/sdb
         salt '*' lvm.lvcreate new_snapshot    vg_name snapshot=volume_name size=3G
     '''
     if size and extents:
-        return 'Error: Please specify only size or extents'
+        return 'Error: Please specify only one of size or extents'
 
     valid = ('activate', 'chunksize', 'contiguous', 'discards', 'stripes',
              'stripesize', 'minor', 'persistent', 'mirrors', 'noudevsync',
@@ -275,36 +275,35 @@ def lvcreate(lvname, vgname, size=None, extents=None, snapshot=None, pv=None, **
              'readahead', 'regionsize', 'thin', 'thinpool', 'type', 'virtualsize',
              'zero',)
     no_parameter = ('noudevsync', 'ignoremonitoring', )
-    extra_arguments = ' '.join([
-        '--{0}'.format(k) if k in no_parameter else '--{0} {1}'.format(k, v)
-        for k, v in kwargs.iteritems() if k in valid
-    ])
+
+    extra_arguments = []
+    if kwargs:
+        for k, v in kwargs.iteritems():
+            if k in no_parameter:
+                extra_arguments.append('--{0}'.format(k))
+            elif k in valid:
+                extra_arguments.extend(['--{0}'.format(k), '{0}'.format(v)])
+
+    cmd = [salt.utils.which('lvcreate'), '-n', lvname]
 
     if snapshot:
-        _snapshot = '-s ' + vgname + '/' + snapshot
+        cmd.extend(['-s', vgname + '/' + snapshot])
+    else:
+        cmd.append(vgname)
 
     if size:
-        if snapshot:
-            cmd = 'lvcreate -n {0} {1} -L {2} {3}'.format(
-                lvname, _snapshot, size, pv
-            )
-        else:
-            cmd = 'lvcreate -n {0} {1} -L {2} {3}'.format(
-                lvname, vgname, size, pv
-            )
+        cmd.extend(['-L', '{0}'.format(size)])
     elif extents:
-        if snapshot:
-            cmd = 'lvcreate -n {0} {1} -l {2} {3}'.format(
-                lvname, _snapshot, extents, pv
-            )
-        else:
-            cmd = 'lvcreate -n {0} {1} -l {2} {3}'.format(
-                lvname, vgname, extents, pv
-            )
+        cmd.extend(['-l', '{0}'.format(extents)])
     else:
         return 'Error: Either size or extents must be specified'
 
-    out = __salt__['cmd.run'](cmd).splitlines()
+    if pv:
+        cmd.append(pv)
+    if extra_arguments:
+        cmd.extend(extra_arguments)
+
+    out = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     lvdev = '/dev/{0}/{1}'.format(vgname, lvname)
     lvdata = lvdisplay(lvdev)
     lvdata['Output from lvcreate'] = out[0].strip()
@@ -323,7 +322,7 @@ def vgremove(vgname):
         salt mymachine lvm.vgremove vgname force=True
     '''
     cmd = 'vgremove -f {0}'.format(vgname)
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=False)
     return out.strip()
 
 
@@ -338,5 +337,5 @@ def lvremove(lvname, vgname):
         salt '*' lvm.lvremove lvname vgname force=True
     '''
     cmd = 'lvremove -f {0}/{1}'.format(vgname, lvname)
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=False)
     return out.strip()

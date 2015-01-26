@@ -1203,7 +1203,7 @@ def managed(name,
         run.
     '''
     # contents must be a string
-    if contents:
+    if contents is not None:
         contents = str(contents)
 
     # Make sure that leading zeros stripped by YAML loader are added back
@@ -1307,7 +1307,6 @@ def managed(name,
 
     try:
         if __opts__['test']:
-            ret['result'] = None
             ret['changes'] = __salt__['file.check_managed_changes'](
                 name,
                 source,
@@ -1322,6 +1321,10 @@ def managed(name,
                 contents,
                 **kwargs
             )
+            if not ret['changes']:
+                ret['result'] = True
+            else:
+                ret['result'] = None
 
             if ret['changes']:
                 ret['comment'] = 'The file {0} is set to be changed'.format(name)
@@ -2242,7 +2245,7 @@ def replace(name,
             - pattern: |
                 CentOS \(2.6.32[^\n]+\n\s+root[^\n]+\n\)+
     '''
-    ret = {'name': name, 'changes': {}, 'result': False, 'comment': ''}
+    ret = {'name': name, 'changes': {}, 'result': True, 'comment': ''}
     if not name:
         return _error(ret, 'Must provide name to file.replace')
 
@@ -2267,10 +2270,11 @@ def replace(name,
         ret['changes'] = {'diff': changes}
         ret['comment'] = ('Changes were made'
                 if not __opts__['test'] else 'Changes would have been made')
+        if __opts__['test']:
+            ret['result'] = None
     else:
-        ret['comment'] = 'No changes were made'
-
-    ret['result'] = True if not __opts__['test'] else None
+        ret['comment'] = ('No changes were made'
+            if not __opts__['test'] else 'No changes would have been made')
     return ret
 
 

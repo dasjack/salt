@@ -15,11 +15,6 @@ import jinja2
 import yaml
 import requests
 try:
-    import msgpack
-    HAS_MSGPACK = True
-except ImportError:
-    HAS_MSGPACK = False
-try:
     import certifi
     HAS_CERTIFI = True
 except ImportError:
@@ -60,6 +55,17 @@ try:
 except ImportError:
     # Older jinja does not need markupsafe
     HAS_MARKUPSAFE = False
+try:
+    # Older python where the backport from pypi is installed
+    from backports import ssl_match_hostname
+    HAS_SSL_MATCH_HOSTNAME = True
+except ImportError:
+    # Other older python we use our bundled copy
+    try:
+        from requests.packages.urllib3.packages import ssl_match_hostname
+        HAS_SSL_MATCH_HOSTNAME = True
+    except ImportError:
+        HAS_SSL_MATCH_HOSTNAME = False
 
 # Import salt libs
 import salt
@@ -117,9 +123,6 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods=''):
             os.path.dirname(yaml.__file__),
             os.path.dirname(requests.__file__)
             ]
-    if HAS_MSGPACK:
-        tops.append(os.path.dirname(msgpack.__file__))
-
     if HAS_URLLIB3:
         tops.append(os.path.dirname(urllib3.__file__))
 
@@ -131,6 +134,9 @@ def gen_thin(cachedir, extra_mods='', overwrite=False, so_mods=''):
 
     if HAS_CERTIFI:
         tops.append(os.path.dirname(certifi.__file__))
+
+    if HAS_SSL_MATCH_HOSTNAME:
+        tops.append(os.path.dirname(os.path.dirname(ssl_match_hostname.__file__)))
 
     for mod in [m for m in extra_mods.split(',') if m]:
         if mod not in locals() and mod not in globals():

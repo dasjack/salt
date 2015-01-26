@@ -5,9 +5,24 @@ Azure Cloud Module
 
 The Azure cloud module is used to control access to Microsoft Azure
 
-Use of this module only requires the ``apikey`` parameter. Set up the cloud
-configuration at ``/etc/salt/cloud.providers`` or
-``/etc/salt/cloud.providers.d/azure.conf``:
+:depends:
+    * `Microsoft Azure SDK for Python <https://pypi.python.org/pypi/azure/0.9.0>`_
+:configuration:
+    Required provider parameters:
+
+    * ``apikey``
+    * ``certificate_path``
+    * ``subscription_id``
+
+    A Management Certificate (.pem and .crt files) must be created and the .pem
+    file placed on the same machine that salt-cloud is run from. Information on
+    creating the pem file to use, and uploading the associated cer file can be
+    found at:
+
+    http://www.windowsazure.com/en-us/develop/python/how-to-guides/service-management/
+
+Example ``/etc/salt/cloud.providers`` or
+``/etc/salt/cloud.providers.d/azure.conf`` configuration:
 
 .. code-block:: yaml
 
@@ -16,30 +31,31 @@ configuration at ``/etc/salt/cloud.providers`` or
       subscription_id: 3287abc8-f98a-c678-3bde-326766fd3617
       certificate_path: /etc/salt/azure.pem
       management_host: management.core.windows.net
-
-Information on creating the pem file to use, and uploading the associated cer
-file can be found at:
-
-http://www.windowsazure.com/en-us/develop/python/how-to-guides/service-management/
 '''
 # pylint: disable=E0102
 
 # Import python libs
-import time
+from __future__ import absolute_import
+
 import copy
-import pprint
 import logging
+import pprint
+import time
 
-# Import salt cloud libs
 import salt.config as config
-import salt.utils.cloud
 from salt.exceptions import SaltCloudSystemExit
+import salt.utils.cloud
 
+
+# Import python libs
+# Import salt cloud libs
 # Import azure libs
 HAS_LIBS = False
 try:
     import azure
     import azure.servicemanagement
+    from azure import (WindowsAzureConflictError,
+                       WindowsAzureMissingResourceError)
     HAS_LIBS = True
 except ImportError:
     pass
@@ -434,10 +450,13 @@ def create(vm_):
         'location': vm_['location'],
     }
 
+    ssh_port = config.get_cloud_config_value('port', vm_, __opts__,
+                                             default='22', search_global=True)
+
     ssh_endpoint = azure.servicemanagement.ConfigurationSetInputEndpoint(
         name='SSH',
         protocol='TCP',
-        port='22',
+        port=ssh_port,
         local_port='22',
     )
 
@@ -460,7 +479,7 @@ def create(vm_):
 
     vm_kwargs = {
         'service_name': service_name,
-        'deployment_name': vm_['name'],
+        'deployment_name': service_name,
         'deployment_slot': vm_['slot'],
         'label': label,
         'role_name': vm_['name'],
@@ -490,7 +509,8 @@ def create(vm_):
 
     try:
         conn.create_hosted_service(**service_kwargs)
-        conn.create_virtual_machine_deployment(**vm_kwargs)
+    except WindowsAzureConflictError:
+        log.debug("Cloud service already exists")
     except Exception as exc:
         error = 'The hosted service name is invalid.'
         if error in str(exc):
@@ -515,17 +535,54 @@ def create(vm_):
                 exc_info_on_loglevel=logging.DEBUG
             )
         return False
+    try:
+        conn.create_virtual_machine_deployment(**vm_kwargs)
+    except WindowsAzureConflictError:
+        log.debug("Conflict error. The deployment may already exist, trying add_role")
+        # Deleting two useless keywords
+        del vm_kwargs["deployment_slot"]
+        del vm_kwargs["label"]
+        conn.add_role(**vm_kwargs)
+    except Exception as exc:
+        error = 'The hosted service name is invalid.'
+        if error in str(exc):
+            log.error(
+                'Error creating {0} on Azure.\n\n'
+                'The VM name is invalid. The name can contain '
+                'only letters, numbers, and hyphens. The name must start with '
+                'a letter and must end with a letter or a number.'.format(
+                    vm_['name']
+                ),
+                # Show the traceback if the debug logging level is enabled
+                exc_info_on_loglevel=logging.DEBUG
+            )
+        else:
+            log.error(
+                'Error creating {0} on Azure.\n\n'
+                'The Virtual Machine could not be created. If you '
+                'are using an already existing Cloud Service, '
+                'make sure you set up the `port` variable corresponding '
+                'to the SSH port exists and that the port number is not '
+                'already in use.\nThe following exception was thrown when trying to '
+                'run the initial deployment: \n{1}'.format(
+                    vm_['name'], str(exc)
+                ),
+                # Show the traceback if the debug logging level is enabled
+                exc_info_on_loglevel=logging.DEBUG
+            )
+        return False
 
     def wait_for_hostname():
         '''
         Wait for the IP address to become available
         '''
         try:
-            data = show_instance(vm_['name'], call='action')
-        except Exception:
+            conn.get_role(service_name, service_name, vm_["name"])
+            data = show_instance(service_name, call='action')
+            if 'url' in data and data['url'] != str(''):
+                return data['url']
+        except WindowsAzureMissingResourceError:
             pass
-        if 'url' in data and data['url'] != str(''):
-            return data['url']
         time.sleep(1)
         return False
 
@@ -554,6 +611,7 @@ def create(vm_):
         deploy_kwargs = {
             'opts': __opts__,
             'host': hostname,
+            'port': ssh_port,
             'username': ssh_username,
             'password': ssh_password,
             'script': deploy_script,
@@ -696,6 +754,9 @@ def destroy(name, conn=None, call=None, kwargs=None):
 
     if not conn:
         conn = get_conn()
+
+    if kwargs is None:
+        kwargs = {}
 
     service_name = kwargs.get('service_name', name)
 

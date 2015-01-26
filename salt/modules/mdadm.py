@@ -9,7 +9,7 @@ import logging
 
 # Import salt libs
 import salt.utils
-from salt.exceptions import CommandExecutionError
+from salt.exceptions import CommandExecutionError, SaltInvocationError
 
 # Set up logger
 log = logging.getLogger(__name__)
@@ -126,10 +126,10 @@ def destroy(device):
     stop_cmd = ['mdadm', '--stop', device]
     zero_cmd = ['mdadm', '--zero-superblock']
 
-    if __salt__['cmd.retcode'](stop_cmd):
+    if __salt__['cmd.retcode'](stop_cmd, python_shell=False):
         for number in details['members']:
-            zero_cmd.append(number['device'])
-        __salt__['cmd.retcode'](zero_cmd)
+            zero_cmd.append(details['members'][number]['device'])
+        __salt__['cmd.retcode'](zero_cmd, python_shell=False)
 
     # Remove entry from config file:
     if __grains__.get('os_family') == 'Debian':
@@ -137,7 +137,10 @@ def destroy(device):
     else:
         cfg_file = '/etc/mdadm.conf'
 
-    __salt__['file.replace'](cfg_file, 'ARRAY {0} .*'.format(device), '')
+    try:
+        __salt__['file.replace'](cfg_file, 'ARRAY {0} .*'.format(device), '')
+    except SaltInvocationError:
+        pass
 
     if __salt__['raid.list']().get(device) is None:
         return True
@@ -164,7 +167,7 @@ def create(name,
 
     .. code-block:: bash
 
-        salt '*' raid.create /dev/md0 level=1 chunk=256 ['/dev/xvdd', '/dev/xvde'] test_mode=True
+        salt '*' raid.create /dev/md0 level=1 chunk=256 devices="['/dev/xvdd', '/dev/xvde']" test_mode=True
 
     .. note::
 
@@ -206,17 +209,20 @@ def create(name,
         if not key.startswith('__'):
             opts.append('--{0}'.format(key))
             if kwargs[key] is not True:
-                opts.append(kwargs[key])
+                opts.append(str(kwargs[key]))
 
     cmd = ['mdadm',
            '-C', name,
+           '-R',
            '-v'] + opts + [
-           '-l', level,
+           '-l', str(level),
            '-e', metadata,
-           '-n', len(devices)] + devices
+           '-n', str(len(devices))] + devices
+
+    cmd_str = ' '.join(cmd)
 
     if test_mode is True:
-        return cmd
+        return cmd_str
     elif test_mode is False:
         return __salt__['cmd.run'](cmd, python_shell=False)
 
