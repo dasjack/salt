@@ -22,14 +22,14 @@ class PipTestCase(TestCase):
         mock = MagicMock(return_value={'retcode': 0, 'stdout': ''})
         with patch.dict(pip.__salt__, {'cmd.run_all': mock}):
             pip.install(requirements='requirements.txt')
-            expected_cmd = 'pip install --requirement=\'requirements.txt\''
+            expected_cmd = 'pip install --requirement="requirements.txt"'
             mock.assert_called_once_with(
                 expected_cmd,
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_editable_withough_egg_fails(self):
@@ -60,7 +60,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing editables as a comma separated list
@@ -75,7 +75,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_multiple_pkgs_and_editables(self):
@@ -101,7 +101,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing editables as a comma separated list
@@ -116,7 +116,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # As a single string
@@ -130,7 +130,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_issue5940_install_multiple_pip_mirrors(self):
@@ -153,7 +153,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a comma separated list
@@ -169,7 +169,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # As a single string
@@ -183,7 +183,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_with_multiple_find_links(self):
@@ -206,7 +206,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a comma separated list
@@ -222,7 +222,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a single string entry
@@ -235,7 +235,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Invalid proto raises exception
@@ -267,7 +267,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_no_index_with_index_url_or_extra_index_url_raises(self):
@@ -300,14 +300,14 @@ class PipTestCase(TestCase):
         mock = MagicMock(return_value={'retcode': 0, 'stdout': ''})
         with patch.dict(pip.__salt__, {'cmd.run_all': mock}):
             pip.install(requirements='salt://requirements.txt')
-            expected_cmd = 'pip install --requirement=\'my_cached_reqs\''
+            expected_cmd = 'pip install --requirement="my_cached_reqs"'
             mock.assert_called_once_with(
                 expected_cmd,
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     @patch('os.path')
@@ -329,7 +329,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     @patch('os.path')
@@ -343,7 +343,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Let's fake a non-writable log file
@@ -368,7 +368,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing an int as a string
@@ -381,7 +381,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing a non-int to timeout
@@ -404,7 +404,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_extra_index_url_argument_in_resulting_command(self):
@@ -417,7 +417,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_no_index_argument_in_resulting_command(self):
@@ -430,7 +430,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_build_argument_in_resulting_command(self):
@@ -443,7 +443,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_target_argument_in_resulting_command(self):
@@ -456,7 +456,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_download_argument_in_resulting_command(self):
@@ -469,7 +469,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_no_download_argument_in_resulting_command(self):
@@ -482,7 +482,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_download_cache_argument_in_resulting_command(self):
@@ -495,7 +495,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_source_argument_in_resulting_command(self):
@@ -508,7 +508,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_exists_action_argument_in_resulting_command(self):
@@ -522,7 +522,7 @@ class PipTestCase(TestCase):
                     runas=None,
                     cwd=None,
                     use_vt=False,
-                    python_shell=False,
+                    python_shell=True,
                 )
 
         # Test for invalid action
@@ -553,7 +553,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a comma separated list
@@ -568,7 +568,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a single string entry
@@ -582,7 +582,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_global_options_argument_in_resulting_command(self):
@@ -603,7 +603,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a comma separated list
@@ -618,7 +618,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing mirrors as a single string entry
@@ -631,7 +631,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_upgrade_argument_in_resulting_command(self):
@@ -644,7 +644,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_force_reinstall_argument_in_resulting_command(self):
@@ -657,7 +657,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_ignore_installed_argument_in_resulting_command(self):
@@ -670,7 +670,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_no_deps_argument_in_resulting_command(self):
@@ -683,7 +683,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_no_install_argument_in_resulting_command(self):
@@ -696,7 +696,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_install_proxy_argument_in_resulting_command(self):
@@ -710,7 +710,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     @patch('salt.modules.pip._get_cached_requirements')
@@ -728,13 +728,13 @@ class PipTestCase(TestCase):
             pip.install(requirements=requirements)
             mock.assert_called_once_with(
                 'pip install '
-                '--requirement=\'my_cached_reqs-1\' '
-                '--requirement=\'my_cached_reqs-2\'',
+                '--requirement="my_cached_reqs-1" '
+                '--requirement="my_cached_reqs-2"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing option as a comma separated list
@@ -746,13 +746,13 @@ class PipTestCase(TestCase):
             pip.install(requirements=','.join(requirements))
             mock.assert_called_once_with(
                 'pip install '
-                '--requirement=\'my_cached_reqs-1\' '
-                '--requirement=\'my_cached_reqs-2\'',
+                '--requirement="my_cached_reqs-1" '
+                '--requirement="my_cached_reqs-2"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing option as a single string entry
@@ -761,12 +761,12 @@ class PipTestCase(TestCase):
         with patch.dict(pip.__salt__, {'cmd.run_all': mock}):
             pip.install(requirements=requirements[0])
             mock.assert_called_once_with(
-                'pip install --requirement=\'my_cached_reqs-1\'',
+                'pip install --requirement="my_cached_reqs-1"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     @patch('salt.modules.pip._get_cached_requirements')
@@ -784,13 +784,13 @@ class PipTestCase(TestCase):
             pip.uninstall(requirements=requirements)
             mock.assert_called_once_with(
                 'pip uninstall -y '
-                '--requirement=\'my_cached_reqs-1\' '
-                '--requirement=\'my_cached_reqs-2\'',
+                '--requirement="my_cached_reqs-1" '
+                '--requirement="my_cached_reqs-2"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing option as a comma separated list
@@ -802,13 +802,13 @@ class PipTestCase(TestCase):
             pip.uninstall(requirements=','.join(requirements))
             mock.assert_called_once_with(
                 'pip uninstall -y '
-                '--requirement=\'my_cached_reqs-1\' '
-                '--requirement=\'my_cached_reqs-2\'',
+                '--requirement="my_cached_reqs-1" '
+                '--requirement="my_cached_reqs-2"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing option as a single string entry
@@ -817,12 +817,12 @@ class PipTestCase(TestCase):
         with patch.dict(pip.__salt__, {'cmd.run_all': mock}):
             pip.uninstall(requirements=requirements[0])
             mock.assert_called_once_with(
-                'pip uninstall -y --requirement=\'my_cached_reqs-1\'',
+                'pip uninstall -y --requirement="my_cached_reqs-1"',
                 saltenv='base',
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     def test_uninstall_proxy_argument_in_resulting_command(self):
@@ -838,7 +838,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
     @patch('os.path')
@@ -852,7 +852,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Let's fake a non-writable log file
@@ -877,7 +877,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing an int as a string
@@ -890,7 +890,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         # Passing a non-int to timeout
@@ -924,7 +924,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
             self.assertEqual(ret, eggs)
 
@@ -956,7 +956,7 @@ class PipTestCase(TestCase):
                 'pip freeze',
                 runas=None,
                 cwd=None,
-                python_shell=False,
+                python_shell=True,
             )
             self.assertEqual(
                 ret, {
@@ -997,7 +997,7 @@ class PipTestCase(TestCase):
                 'pip freeze',
                 runas=None,
                 cwd=None,
-                python_shell=False,
+                python_shell=True,
             )
             self.assertEqual(
                 ret, {
@@ -1023,7 +1023,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
         mock = MagicMock(side_effect=[
@@ -1040,7 +1040,7 @@ class PipTestCase(TestCase):
                 runas=None,
                 cwd=None,
                 use_vt=False,
-                python_shell=False,
+                python_shell=True,
             )
 
 
