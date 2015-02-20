@@ -520,7 +520,7 @@ def install(pkgs=None,  # pylint: disable=R0912,R0913,R0914
         # Put the commas back in while making sure the names are contained in
         # quotes, this allows for proper version spec passing salt>=0.17.0
         cmd.extend(
-            ['{0!r}'.format(p.replace(';', ',')) for p in pkgs]
+            ['{0}'.format(p.replace(';', ',')) for p in pkgs]
         )
 
     if editable:
