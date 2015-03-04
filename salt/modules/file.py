@@ -1159,7 +1159,13 @@ def replace(path,
         salt '*' file.replace /etc/httpd/httpd.conf pattern='LogLevel warn' repl='LogLevel info'
         salt '*' file.replace /some/file pattern='before' repl='after' flags='[MULTILINE, IGNORECASE]'
     '''
-    path = os.path.expanduser(path)
+    symlink = False
+    if is_link(path):
+        symlink = True
+        target_path = os.readlink(path)
+        given_path = os.path.expanduser(path)
+
+    path = os.path.realpath(os.path.expanduser(path))
 
     if not os.path.exists(path):
         raise SaltInvocationError('File not found: {0}'.format(path))
@@ -1177,7 +1183,7 @@ def replace(path,
         raise SaltInvocationError('Choose between append or prepend_if_not_found')
 
     flags_num = _get_flags(flags)
-    cpattern = re.compile(pattern, flags_num)
+    cpattern = re.compile(str(pattern), flags_num)
     if bufsize == 'file':
         bufsize = os.path.getsize(path)
 
@@ -1232,6 +1238,14 @@ def replace(path,
                         backup=False if (dry_run or search_only or found) else backup,
                         bufsize=bufsize,
                         mode='r' if (dry_run or search_only or found) else 'rb')
+
+        if symlink and (backup and not (dry_run or search_only or found)):
+            symlink_backup = given_path + backup
+            # Always clobber any existing symlink backup
+            # to match the behavior of the 'backup' option
+            if os.path.exists(symlink_backup):
+                os.remove(symlink_backup)
+            os.symlink(target_path + backup, given_path + backup)
 
         if not found:
             for line in fi_file:
@@ -4278,6 +4292,48 @@ def pardir():
         salt '*' file.pardir
     '''
     return os.path.pardir
+
+
+def basename(path):
+    '''
+    Returns the final component of a pathname
+
+    .. versionadded:: 2015.2
+
+    This can be useful at the CLI but is frequently useful when scripting.
+
+    .. code-block:: yaml
+
+        {%- set filename = salt['file.basename'](source_file) %}
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' file.basename 'test/test.config'
+    '''
+    return os.path.basename(path)
+
+
+def dirname(path):
+    '''
+    Returns the directory component of a pathname
+
+    .. versionadded:: 2015.2
+
+    This can be useful at the CLI but is frequently useful when scripting.
+
+    .. code-block:: yaml
+
+        {%- from salt['file.dirname'](tpldir) + '/vars.jinja' import parent_vars %}
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' file.dirname 'test/path/filename.config'
+    '''
+    return os.path.dirname(path)
 
 
 def join(*args):

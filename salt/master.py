@@ -51,6 +51,7 @@ import salt.utils.process
 import salt.utils.zeromq
 import salt.utils.jid
 from salt.defaults import DEFAULT_TARGET_DELIM
+from salt.exceptions import FileserverConfigError
 from salt.utils.debug import enable_sigusr1_handler, enable_sigusr2_handler, inspect_stack
 from salt.utils.event import tagify
 import binascii
@@ -358,6 +359,13 @@ class Master(SMaster):
                 'Failed to load fileserver backends, the configured backends '
                 'are: {0}'.format(', '.join(self.opts['fileserver_backend']))
             )
+        else:
+            # Run init() for all backends which support the function, to
+            # double-check configuration
+            try:
+                fileserver.init()
+            except FileserverConfigError as exc:
+                errors.append('{0}'.format(exc))
         if not self.opts['fileserver_backend']:
             errors.append('No fileserver backends are configured')
         if errors:
@@ -1172,11 +1180,6 @@ class AESFuncs(object):
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return False
         load['grains']['id'] = load['id']
-        mods = set()
-        for func in self.mminion.functions.values():
-            mods.add(func.__module__)
-        for mod in mods:
-            sys.modules[mod].__grains__ = load['grains']
 
         pillar_dirs = {}
         pillar = salt.pillar.Pillar(
@@ -1184,9 +1187,8 @@ class AESFuncs(object):
             load['grains'],
             load['id'],
             load.get('saltenv', load.get('env')),
-            load.get('ext'),
-            self.mminion.functions,
-            load.get('pillar_override', {}))
+            ext=load.get('ext'),
+            pillar=load.get('pillar_override', {}))
         data = pillar.compile_pillar(pillar_dirs=pillar_dirs)
         if self.opts.get('minion_data_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
@@ -1202,8 +1204,6 @@ class AESFuncs(object):
                          'pillar': data})
                     )
             os.rename(tmpfname, datap)
-        for mod in mods:
-            sys.modules[mod].__grains__ = self.opts['grains']
         return data
 
     def _minion_event(self, load):

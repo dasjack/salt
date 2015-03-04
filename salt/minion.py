@@ -21,7 +21,7 @@ import time
 import traceback
 import types
 from random import randint, shuffle
-from salt.ext.six.moves import range
+from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
 
 # Import third party libs
 try:
@@ -51,6 +51,13 @@ try:
     HAS_RESOURCE = True
 except ImportError:
     pass
+
+try:
+    import zmq.utils.monitor
+    HAS_ZMQ_MONITOR = True
+except ImportError:
+    HAS_ZMQ_MONITOR = False
+# pylint: enable=import-error
 
 # Import salt libs
 from salt.exceptions import (
@@ -145,15 +152,61 @@ def resolve_dns(opts):
     return ret
 
 
-def get_proc_dir(cachedir):
+def get_proc_dir(cachedir, **kwargs):
     '''
     Given the cache directory, return the directory that process data is
     stored in, creating it if it doesn't exist.
+    The following optional Keyword Arguments are handled:
+
+    mode: which is anything os.makedir would accept as mode.
+
+    uid: the uid to set, if not set, or it is None or -1 no changes are
+         made. Same applies if the directory is already owned by this
+         uid. Must be int. Works only on unix/unix like systems.
+
+    gid: the gid to set, if not set, or it is None or -1 no changes are
+         made. Same applies if the directory is already owned by this
+         gid. Must be int. Works only on unix/unix like systems.
     '''
     fn_ = os.path.join(cachedir, 'proc')
+    mode = kwargs.pop('mode', None)
+
+    if mode is None:
+        mode = {}
+    else:
+        mode = {'mode': mode}
+
     if not os.path.isdir(fn_):
-        # proc_dir is not present, create it
-        os.makedirs(fn_)
+        # proc_dir is not present, create it with mode settings
+        os.makedirs(fn_, **mode)
+        d_stat = os.stat(fn_)
+    else:
+        d_stat = os.stat(fn_)
+
+    # if mode is not an empty dict then we have an explicit
+    # dir mode. So lets check if mode needs to be changed.
+    if mode:
+        if d_stat.st_mode | mode['mode'] != d_stat.st_mode:
+            os.chmod(fn_, d_stat.st_mode | mode['mode'])
+
+    if hasattr(os, 'chown'):
+        # only on unix/unix like systems
+        uid = kwargs.pop('uid', None)
+        gid = kwargs.pop('gid', None)
+
+        if uid is None:
+            # -1 means no change to current uid
+            uid = -1
+        if gid is None:
+            # -1 means no change to current gid
+            gid = -1
+
+        # if uid and gid are both -1 then go ahead with
+        # no changes at all
+        if (d_stat.st_uid != uid or d_stat.st_gid != gid) and \
+                [i for i in (uid, gid) if i != -1]:
+            os.chown(fn_, uid, gid)
+
     return fn_
 
 
@@ -571,24 +624,16 @@ class MultiMinion(MinionBase):
                 # run scheduled jobs if you have them
                 loop_interval = self.process_schedule(minion['minion'], loop_interval)
 
-                # if you have an event to handle, do it on a single minion
-                # (first one to not throw an exception)
+                # If a minion instance receives event, handle the event on all
+                # instances
                 if package:
-                    # If we need to expand this, we may want to consider a specific header
-                    # or another approach entirely.
-                    if package.startswith('_minion_mine'):
-                        for multi_minion in minions:
-                            try:
-                                minions[master]['minion'].handle_event(package)
-                            except Exception:
-                                pass
-                    else:
-                        try:
-                            minion['minion'].handle_event(package)
-                            package = None
-                            self.epub_sock.send(package)
-                        except Exception:
-                            pass
+                    try:
+                        for master in masters:
+                            minions[master].handle_event(package)
+                    except Exception:
+                        pass
+                    finally:
+                        package = None
 
                 # have the Minion class run anything it has to run
                 next(minion['generator'])
@@ -643,7 +688,8 @@ class Minion(MinionBase):
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()
         self.matcher = Matcher(self.opts, self.functions)
-        self.proc_dir = get_proc_dir(opts['cachedir'])
+        uid = salt.utils.get_uid(user=opts.get('user', None))
+        self.proc_dir = get_proc_dir(opts['cachedir'], uid=uid)
         self.schedule = salt.utils.schedule.Schedule(
             self.opts,
             self.functions,
@@ -1055,7 +1101,7 @@ class Minion(MinionBase):
                     func,
                     data['arg'],
                     data)
-                sys.modules[func.__module__].__context__['retcode'] = 0
+                minion_instance.functions.pack['__context__']['retcode'] = 0
                 if opts.get('sudo_user', ''):
                     sudo_runas = opts.get('sudo_user')
                     if 'sudo.salt_call' in minion_instance.functions:
@@ -1083,7 +1129,7 @@ class Minion(MinionBase):
                     ret['return'] = iret
                 else:
                     ret['return'] = return_data
-                ret['retcode'] = sys.modules[func.__module__].__context__.get(
+                ret['retcode'] = minion_instance.functions.pack['__context__'].get(
                     'retcode',
                     0
                 )
@@ -1343,6 +1389,28 @@ class Minion(MinionBase):
             self.socket.setsockopt(
                 zmq.TCP_KEEPALIVE_INTVL, self.opts['tcp_keepalive_intvl']
             )
+
+    def _set_monitor_socket(self):
+        if not HAS_ZMQ_MONITOR or not self.opts['zmq_monitor']:
+            return
+        self.monitor_socket = self.socket.get_monitor_socket()
+        t = threading.Thread(target=self._socket_monitor, args=(self.monitor_socket,))
+        t.start()
+
+    def _socket_monitor(self, monitor):
+        event_map = {}
+        for name in dir(zmq):
+            if name.startswith('EVENT_'):
+                value = getattr(zmq, name)
+                event_map[value] = name
+        while monitor.poll():
+            evt = zmq.utils.monitor.recv_monitor_message(monitor)
+            evt.update({'description': event_map[evt['event']]})
+            log.debug("ZeroMQ event: {0}".format(evt))
+            if evt['event'] == zmq.EVENT_MONITOR_STOPPED:
+                break
+        monitor.close()
+        log.trace("event monitor thread done!")
 
     def _set_reconnect_ivl(self):
         recon_delay = self.opts['recon_default']
@@ -1693,6 +1761,7 @@ class Minion(MinionBase):
 
         self._set_reconnect_ivl()
         self._setsockopts()
+        self._set_monitor_socket()
 
         self.socket.connect(self.master_pub)
         self.poller.register(self.socket, zmq.POLLIN)
@@ -1959,7 +2028,6 @@ class Syndic(Minion):
                        data['ret'],
                        data['jid'],
                        data['to'],
-                       user=data.get('user', ''),
                        **kwargs)
 
     def _setsockopts(self):
@@ -2710,7 +2778,8 @@ class ProxyMinion(Minion):
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()
         self.matcher = Matcher(self.opts, self.functions)
-        self.proc_dir = get_proc_dir(opts['cachedir'])
+        uid = salt.utils.get_uid(user=opts.get('user', None))
+        self.proc_dir = get_proc_dir(opts['cachedir'], uid=uid)
         self.schedule = salt.utils.schedule.Schedule(
             self.opts,
             self.functions,

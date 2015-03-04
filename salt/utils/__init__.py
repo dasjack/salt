@@ -2,15 +2,14 @@
 '''
 Some of the utils used by salt
 '''
-from __future__ import absolute_import
-from __future__ import print_function
 
 # Import python libs
+from __future__ import absolute_import, print_function
 import contextlib
 import copy
 import collections
 import datetime
-import distutils.version  # pylint: disable=E0611
+import distutils.version  # pylint: disable=import-error,no-name-in-module
 import errno
 import fnmatch
 import hashlib
@@ -32,13 +31,14 @@ import types
 import warnings
 import string
 import locale
-from salt.ext.six import string_types
-from salt.ext.six.moves.urllib.parse import urlparse  # pylint: disable=E0611
 import salt.ext.six as six
+# pylint: disable=import-error
+from salt.ext.six.moves.urllib.parse import urlparse  # pylint: disable=no-name-in-module
+# pylint: disable=redefined-builtin
 from salt.ext.six.moves import range
 from salt.ext.six.moves import zip
 from salt.ext.six.moves import map
-
+# pylint: enable=import-error,redefined-builtin
 # Try to load pwd, fallback to getpass if unsuccessful
 try:
     import pwd
@@ -238,6 +238,56 @@ def get_user():
         return pwd.getpwuid(os.geteuid()).pw_name
     else:
         return getpass.getuser()
+
+
+def get_uid(user=None):
+    """
+    Get the uid for a given user name. If no user given,
+    the current euid will be returned. If the user
+    does not exist, None will be returned. On
+    systems which do not support pwd or os.geteuid
+    it will return None.
+    """
+    if pwd is None:
+        result = None
+    elif user is None:
+        try:
+            result = os.geteuid()
+        except AttributeError:
+            result = None
+    else:
+        try:
+            u_struct = pwd.getpwnam(user)
+        except KeyError:
+            result = None
+        else:
+            result = u_struct.pw_uid
+    return result
+
+
+def get_gid(group=None):
+    """
+    Get the gid for a given group name. If no group given,
+    the current egid will be returned. If the group
+    does not exist, None will be returned. On
+    systems which do not support grp or os.getegid
+    it will return None.
+    """
+    if grp is None:
+        result = None
+    elif group is None:
+        try:
+            result = os.getegid()
+        except AttributeError:
+            result = None
+    else:
+        try:
+            g_struct = grp.getgrnam(group)
+        except KeyError:
+            result = None
+        else:
+            result = g_struct.gr_gid
+    return result
 
 
 def get_specific_user():
@@ -719,7 +769,9 @@ def format_call(fun,
 
     aspec = salt.utils.args.get_function_argspec(fun)
 
-    args, kwargs = iter(arg_lookup(fun).values())
+    arg_data = arg_lookup(fun)
+    args = arg_data['args']
+    kwargs = arg_data['kwargs']
 
     # Since we WILL be changing the data dictionary, let's change a copy of it
     data = data.copy()
@@ -774,6 +826,17 @@ def format_call(fun,
             continue
         extra[key] = copy.deepcopy(value)
 
+    # We'll be showing errors to the users until Salt Carbon comes out, after
+    # which, errors will be raised instead.
+    warn_until(
+        'Carbon',
+        'It\'s time to start raising `SaltInvocationError` instead of '
+        'returning warnings',
+        # Let's not show the deprecation warning on the console, there's no
+        # need.
+        _dont_call_warnings=True
+    )
+
     if extra:
         # Found unexpected keyword arguments, raise an error to the user
         if len(extra) == 1:
@@ -787,7 +850,7 @@ def format_call(fun,
                 )
             )
         else:
-            msg = '{0} and {1!r} are invalid keyword arguments for {2}'.format(
+            msg = '{0} and {1!r} are invalid keyword arguments for {2!r}'.format(
                 ', '.join(['{0!r}'.format(e) for e in extra][:-1]),
                 list(extra.keys())[-1],
                 ret.get(
@@ -797,14 +860,20 @@ def format_call(fun,
                     '{0}.{1}'.format(fun.__module__, fun.__name__)
                 )
             )
-        raise SaltInvocationError(
+
+        # Return a warning to the user explaining what's going on
+        ret.setdefault('warnings', []).append(
             '{0}. If you were trying to pass additional data to be used '
             'in a template context, please populate \'context\' with '
-            '\'key: value\' pairs.{1}'.format(
+            '\'key: value\' pairs. Your approach will work until Salt '
+            'Carbon is out.{1}'.format(
                 msg,
                 '' if 'full' not in ret else ' Please update your state files.'
             )
         )
+
+        # Lets pack the current extra kwargs as template context
+        ret.setdefault('context', {}).update(extra)
     return ret
 
 
@@ -931,9 +1000,20 @@ def fopen(*args, **kwargs):
     survive into the new program after exec.
 
     NB! We still have small race condition between open and fcntl.
+
     '''
-    # Remove lock from kwargs if present
+    # Remove lock, uid, gid and mode from kwargs if present
     lock = kwargs.pop('lock', False)
+
+    if lock is True:
+        warn_until(
+            'Beryllium',
+            'The \'lock\' keyword argument is deprecated and will be '
+            'removed in Salt Beryllium. Please use '
+            '\'salt.utils.flopen()\' for file locking while calling '
+            '\'salt.utils.fopen()\'.'
+        )
+        return flopen(*args, **kwargs)
 
     fhandle = open(*args, **kwargs)
     if is_fcntl_available():
@@ -944,9 +1024,8 @@ def fopen(*args, **kwargs):
         except AttributeError:
             FD_CLOEXEC = 1                  # pylint: disable=C0103
         old_flags = fcntl.fcntl(fhandle.fileno(), fcntl.F_GETFD)
-        if lock and is_fcntl_available(check_sunos=True):
-            fcntl.flock(fhandle.fileno(), fcntl.LOCK_SH)
         fcntl.fcntl(fhandle.fileno(), fcntl.F_SETFD, old_flags | FD_CLOEXEC)
+
     return fhandle
 
 
@@ -955,12 +1034,56 @@ def flopen(*args, **kwargs):
     '''
     Shortcut for fopen with lock and context manager
     '''
-    with fopen(*args, lock=True, **kwargs) as fp_:
+    with fopen(*args, **kwargs) as fhandle:
         try:
-            yield fp_
+            if is_fcntl_available(check_sunos=True):
+                fcntl.flock(fhandle.fileno(), fcntl.LOCK_SH)
+            yield fhandle
         finally:
             if is_fcntl_available(check_sunos=True):
-                fcntl.flock(fp_.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fhandle.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def fpopen(*args, **kwargs):
+    '''
+    Shortcut for fopen with extra uid, gid and mode options.
+
+    Supported optional Keyword Arguments:
+
+      mode: explicit mode to set. Mode is anything os.chmod
+            would accept as input for mode. Works only on unix/unix
+            like systems.
+
+      uid: the uid to set, if not set, or it is None or -1 no changes are
+           made. Same applies if the path is already owned by this
+           uid. Must be int. Works only on unix/unix like systems.
+
+      gid: the gid to set, if not set, or it is None or -1 no changes are
+           made. Same applies if the path is already owned by this
+           gid. Must be int. Works only on unix/unix like systems.
+
+    '''
+    # Remove uid, gid and mode from kwargs if present
+    uid = kwargs.pop('uid', -1)  # -1 means no change to current uid
+    gid = kwargs.pop('gid', -1)  # -1 means no change to current gid
+    mode = kwargs.pop('mode', None)
+    with fopen(*args, **kwargs) as fhandle:
+        path = args[0]
+        d_stat = os.stat(path)
+
+        if hasattr(os, 'chown'):
+            # if uid and gid are both -1 then go ahead with
+            # no changes at all
+            if (d_stat.st_uid != uid or d_stat.st_gid != gid) and \
+                    [i for i in (uid, gid) if i != -1]:
+                os.chown(path, uid, gid)
+
+        if mode is not None:
+            if d_stat.st_mode | mode != d_stat.st_mode:
+                os.chmod(path, d_stat.st_mode | mode)
+
+        yield fhandle
 
 
 def expr_match(line, expr):
@@ -993,7 +1116,7 @@ def check_whitelist_blacklist(value, whitelist=None, blacklist=None):
     if whitelist:
         try:
             for expr in whitelist:
-                if expr_match(expr, value):
+                if expr_match(value, expr):
                     in_whitelist = True
                     break
         except TypeError:
@@ -1005,7 +1128,7 @@ def check_whitelist_blacklist(value, whitelist=None, blacklist=None):
     if blacklist:
         try:
             for expr in blacklist:
-                if expr_match(expr, value):
+                if expr_match(value, expr):
                     in_blacklist = True
                     break
         except TypeError:
@@ -1249,13 +1372,10 @@ def is_fcntl_available(check_sunos=False):
     Simple function to check if the `fcntl` module is available or not.
 
     If `check_sunos` is passed as `True` an additional check to see if host is
-    SunOS is also made. For additional information check commit:
-        http://goo.gl/159FF8
+    SunOS is also made. For additional information see: http://goo.gl/159FF8
     '''
-    if HAS_FCNTL is False:
+    if check_sunos and is_sunos():
         return False
-    if check_sunos is True:
-        return HAS_FCNTL and is_sunos()
     return HAS_FCNTL
 
 
@@ -1386,7 +1506,7 @@ def is_true(value=None):
     # Now check for truthiness
     if isinstance(value, (int, float)):
         return value > 0
-    elif isinstance(value, string_types):
+    elif isinstance(value, six.string_types):
         return str(value).lower() == 'true'
     else:
         return bool(value)
@@ -1624,7 +1744,7 @@ def date_cast(date):
 
     # fuzzy date
     try:
-        if isinstance(date, string_types):
+        if isinstance(date, six.string_types):
             try:
                 if HAS_TIMELIB:
                     return timelib.strtodatetime(date)
@@ -1702,7 +1822,7 @@ def warn_until(version,
                                 checks to raise a ``RuntimeError``.
     '''
     if not isinstance(version, (tuple,
-                                string_types,
+                                six.string_types,
                                 salt.version.SaltStackVersion)):
         raise RuntimeError(
             'The \'version\' argument should be passed as a tuple, string or '
@@ -1710,7 +1830,7 @@ def warn_until(version,
         )
     elif isinstance(version, tuple):
         version = salt.version.SaltStackVersion(*version)
-    elif isinstance(version, string_types):
+    elif isinstance(version, six.string_types):
         version = salt.version.SaltStackVersion.from_name(version)
 
     if stacklevel is None:
@@ -1795,7 +1915,7 @@ def kwargs_warn_until(kwargs,
                                 checks to raise a ``RuntimeError``.
     '''
     if not isinstance(version, (tuple,
-                                string_types,
+                                six.string_types,
                                 salt.version.SaltStackVersion)):
         raise RuntimeError(
             'The \'version\' argument should be passed as a tuple, string or '
@@ -1803,7 +1923,7 @@ def kwargs_warn_until(kwargs,
         )
     elif isinstance(version, tuple):
         version = salt.version.SaltStackVersion(*version)
-    elif isinstance(version, string_types):
+    elif isinstance(version, six.string_types):
         version = salt.version.SaltStackVersion.from_name(version)
 
     if stacklevel is None:
@@ -2049,7 +2169,7 @@ def repack_dictlist(data):
     Takes a list of one-element dicts (as found in many SLS schemas) and
     repacks into a single dictionary.
     '''
-    if isinstance(data, string_types):
+    if isinstance(data, six.string_types):
         try:
             import yaml
             data = yaml.safe_load(data)
@@ -2058,13 +2178,13 @@ def repack_dictlist(data):
             return {}
     if not isinstance(data, list) \
             or [x for x in data
-                if not isinstance(x, (string_types, int, float, dict))]:
+                if not isinstance(x, (six.string_types, int, float, dict))]:
         log.error('Invalid input: {0}'.format(pprint.pformat(data)))
         log.error('Input must be a list of strings/dicts')
         return {}
     ret = {}
     for element in data:
-        if isinstance(element, (string_types, int, float)):
+        if isinstance(element, (six.string_types, int, float)):
             ret[element] = None
         else:
             if len(element) != 1:
@@ -2087,7 +2207,7 @@ def get_group_list(user=None, include_default=True):
         return []
     group_names = None
     ugroups = set()
-    if not isinstance(user, string_types):
+    if not isinstance(user, six.string_types):
         raise Exception
     if hasattr(os, 'getgrouplist'):
         # Try os.getgrouplist, available in python >= 3.3
@@ -2100,7 +2220,7 @@ def get_group_list(user=None, include_default=True):
         # Try pysss.getgrouplist
         log.trace('Trying pysss.getgrouplist for {0!r}'.format(user))
         try:
-            import pysss
+            import pysss  # pylint: disable=import-error
             group_names = list(pysss.getgrouplist(user))
         except Exception:
             pass

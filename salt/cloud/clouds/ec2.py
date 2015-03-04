@@ -12,9 +12,13 @@ To use the EC2 cloud module, set up the cloud configuration at
 .. code-block:: yaml
 
     my-ec2-config:
-      # The EC2 API authentication id
+      # The EC2 API authentication id, set this and/or key to
+      # 'use-instance-role-credentials' to use the instance role credentials
+      # from the meta-data if running on an AWS instance
       id: GKTADJGHEIQSXMKKRBJ08H
-      # The EC2 API authentication key
+      # The EC2 API authentication key, set this and/or id to
+      # 'use-instance-role-credentials' to use the instance role credentials
+      # from the meta-data if running on an AWS instance
       key: askdjghsdfjkghWupUjasdflkdfklgjsdfjajkghs
       # The ssh keyname to use
       keyname: default
@@ -114,6 +118,7 @@ try:
     import Crypto
     # PKCS1_v1_5 was added in PyCrypto 2.5
     from Crypto.Cipher import PKCS1_v1_5  # pylint: disable=E0611
+    from Crypto.Hash import SHA  # pylint: disable=E0611,W0611
     HAS_PYCRYPTO = True
 except ImportError:
     HAS_PYCRYPTO = False
@@ -299,6 +304,9 @@ def query(params=None, setname=None, requesturl=None, location=None,
     provider = get_configured_provider()
     service_url = provider.get('service_url', 'amazonaws.com')
 
+    # Retrieve access credentials from meta-data, or use provided
+    access_key_id, secret_access_key, token = aws.creds(provider)
+
     attempts = 5
     while attempts > 0:
         params_with_headers = params.copy()
@@ -337,11 +345,13 @@ def query(params=None, setname=None, requesturl=None, location=None,
             DEFAULT_EC2_API_VERSION
         )
 
-        params_with_headers['AWSAccessKeyId'] = provider['id']
+        params_with_headers['AWSAccessKeyId'] = access_key_id
         params_with_headers['SignatureVersion'] = '2'
         params_with_headers['SignatureMethod'] = 'HmacSHA256'
         params_with_headers['Timestamp'] = '{0}'.format(timestamp)
         params_with_headers['Version'] = ec2_api_version
+        if token != '':
+            params_with_headers['SecurityToken'] = token
         keys = sorted(params_with_headers)
         values = list(map(params_with_headers.get, keys))
         querystring = _urlencode(list(zip(keys, values)))
@@ -355,7 +365,7 @@ def query(params=None, setname=None, requesturl=None, location=None,
                                           endpoint_path.encode('utf-8'),
                                           querystring.encode('utf-8'))
 
-        hashed = hmac.new(provider['key'], uri, hashlib.sha256)
+        hashed = hmac.new(secret_access_key, uri, hashlib.sha256)
         sig = binascii.b2a_base64(hashed.digest())
         params_with_headers['Signature'] = sig.strip()
 
@@ -1909,6 +1919,12 @@ def wait_for_instance(
         win_passwd = config.get_cloud_config_value(
             'win_password', vm_, __opts__, default=''
         )
+        win_deploy_auth_retries = config.get_cloud_config_value(
+            'win_deploy_auth_retries', vm_, __opts__, default='10'
+        )
+        win_deploy_auth_retry_delay = config.get_cloud_config_value(
+            'win_deploy_auth_retry_delay', vm_, __opts__, default='1'
+        )
         if win_passwd and win_passwd == 'auto':
             log.debug('Waiting for auto-generated Windows EC2 password')
             while True:
@@ -1937,7 +1953,9 @@ def wait_for_instance(
             )
         if not salt.utils.cloud.validate_windows_cred(ip_address,
                                                       username,
-                                                      win_passwd):
+                                                      win_passwd,
+                                                      retries=win_deploy_auth_retries,
+                                                      retry_delay=win_deploy_auth_retry_delay):
             raise SaltCloudSystemExit(
                 'Failed to authenticate against remote windows host'
             )
@@ -2055,6 +2073,8 @@ def create(vm_=None, call=None):
             )
         )
     vm_['key_filename'] = key_filename
+    # wait_for_instance requires private_key
+    vm_['private_key'] = key_filename
 
     # Get SSH Gateway config early to verify the private_key,
     # if used, exists or not. We don't want to deploy an instance
