@@ -247,7 +247,7 @@ def list_(narrow=None, all_versions=False, pre_versions=False, source=None, loca
     '''
     choc_path = _find_chocolatey()
     cmd = [choc_path, 'list']
-    if filter:
+    if narrow:
         cmd.extend([narrow])
     if salt.utils.is_true(all_versions):
         cmd.append('-AllVersions')
