@@ -119,6 +119,25 @@ class Serial(object):
         '''
         try:
             return msgpack.dumps(msg)
+        except OverflowError:
+            # msgpack can't handle the very long Python longs for jids
+            # Convert any very long longs to strings
+            # We borrow the technique used by TypeError below
+            def verylong_encoder(obj):
+                if isinstance(obj, dict):
+                    for key, value in six.iteritems(obj.copy()):
+                        obj[key] = verylong_encoder(value)
+                    return dict(obj)
+                elif isinstance(obj, (list, tuple)):
+                    obj = list(obj)
+                    for idx, entry in enumerate(obj):
+                        obj[idx] = verylong_encoder(entry)
+                    return obj
+                if isinstance(obj, long) and long > pow(2, 64):
+                    return str(obj)
+                else:
+                    return obj
+            return msgpack.dumps(verylong_encoder(msg))
         except TypeError:
             if msgpack.version >= (0, 2, 0):
                 # Should support OrderedDict serialization, so, let's
@@ -160,13 +179,14 @@ class SREQ(object):
     '''
     Create a generic interface to wrap salt zeromq req calls.
     '''
-    def __init__(self, master, id_='', serial='msgpack', linger=0):
+    def __init__(self, master, id_='', serial='msgpack', linger=0, opts=None):
         self.master = master
         self.id_ = id_
         self.serial = Serial(serial)
         self.linger = linger
         self.context = zmq.Context()
         self.poller = zmq.Poller()
+        self.opts = opts
 
     @property
     def socket(self):
@@ -181,6 +201,7 @@ class SREQ(object):
                     zmq.RECONNECT_IVL_MAX, 5000
                 )
 
+            self._set_tcp_keepalive()
             if self.master.startswith('tcp://['):
                 # Hint PF type if bracket enclosed IPv6 address
                 if hasattr(zmq, 'IPV6'):
@@ -192,6 +213,25 @@ class SREQ(object):
                 self._socket.setsockopt(zmq.IDENTITY, self.id_)
             self._socket.connect(self.master)
         return self._socket
+
+    def _set_tcp_keepalive(self):
+        if hasattr(zmq, 'TCP_KEEPALIVE') and self.opts:
+            if 'tcp_keepalive' in self.opts:
+                self._socket.setsockopt(
+                    zmq.TCP_KEEPALIVE, self.opts['tcp_keepalive']
+                )
+            if 'tcp_keepalive_idle' in self.opts:
+                self._socket.setsockopt(
+                    zmq.TCP_KEEPALIVE_IDLE, self.opts['tcp_keepalive_idle']
+                )
+            if 'tcp_keepalive_cnt' in self.opts:
+                self._socket.setsockopt(
+                    zmq.TCP_KEEPALIVE_CNT, self.opts['tcp_keepalive_cnt']
+                )
+            if 'tcp_keepalive_intvl' in self.opts:
+                self._socket.setsockopt(
+                    zmq.TCP_KEEPALIVE_INTVL, self.opts['tcp_keepalive_intvl']
+                )
 
     def clear_socket(self):
         '''
