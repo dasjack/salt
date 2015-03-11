@@ -5,7 +5,6 @@ A collection of mixins useful for the various *Client interfaces
 from __future__ import print_function
 from __future__ import absolute_import
 import collections
-import copy
 import logging
 import traceback
 import multiprocessing
@@ -21,6 +20,7 @@ import salt.transport
 from salt.utils.error import raise_error
 from salt.utils.event import tagify
 from salt.utils.doc import strip_rst as _strip_rst
+from salt.utils.lazy import verify_fun
 
 log = logging.getLogger(__name__)
 
@@ -102,17 +102,6 @@ class SyncClientMixin(object):
         is passed in as kwargs, will re-use the JID passed in
         '''
         return ClientFuncsDict(self)
-
-    def _verify_fun(self, fun):
-        '''
-        Check that the function passed really exists
-        '''
-        if not fun:
-            err = 'Must specify a function to run'
-            raise salt.exceptions.CommandExecutionError(err)
-        if fun not in self.functions:
-            err = 'Function {0!r} is unavailable'.format(fun)
-            raise salt.exceptions.CommandExecutionError(err)
 
     def master_call(self, **kwargs):
         '''
@@ -248,16 +237,6 @@ class SyncClientMixin(object):
                 'user': low.get('__user__', 'UNKNOWN'),
                 }
 
-        # Append kwargs to the data map. This is particularly important
-        # so as to include 'outputter' in the map.
-        # TODO: should this be done here or just before 'ret' event is fired?
-        if 'kwargs' in low:
-            kwargs = copy.deepcopy(low['kwargs'])
-            for kwargs_key, kwargs_value in kwargs.items():
-                # Do not overwrite fun, jid, or user.
-                if kwargs_key not in ('fun', 'jid', 'user'):
-                    data[kwargs_key] = kwargs[kwargs_key]
-
         event = salt.utils.event.get_event(
                 'master',
                 self.opts['sock_dir'],
@@ -285,7 +264,7 @@ class SyncClientMixin(object):
         func_globals['__jid_event__'].fire_event(data, 'new')
 
         try:
-            self._verify_fun(fun)
+            verify_fun(self.functions, fun)
 
             # Inject some useful globals to *all* the funciton's global
             # namespace only once per module-- not per func
@@ -450,33 +429,17 @@ class AsyncClientMixin(object):
             return
 
         # some suffixes we don't want to print
-        if suffix in ('new', ):
+        if suffix in ('new',):
             return
 
-        # --out/output and outtputer= are synonyms.
-        # --out/output wins if both are defined
-        # Default to the outputter in the event
-        outputter = event.get('outputter', None)
-        # --out and --output are gracked internally with 'output'
-        # self.opts.get('out') will resolve to None
-        opts_outputter = self.opts.get('output', None)
-
-        # Override with opts_outputter?
-        if opts_outputter is not None:
-            # Emit a warning if both are defined and the outputter is changing
-            if outputter is not None and outputter != opts_outputter:
-                warning = "Both outputter={0} and --out/output={1} are defined. {1} will be used.".format(outputter, opts_outputter)
-                log.warn(warning)
-            outputter = opts_outputter
-
-        # TODO: clean up this event print out. We probably want something
-        # more general, since this will get *really* messy as
-        # people use more events that don't quite fit into this mold
-        if suffix == 'ret':  # for "ret" just print out return
-            salt.output.display_output(event['return'], outputter, self.opts)
-        elif isinstance(event, dict) and outputter is not None:
-            print(self.outputters[outputter](event['data']))
-        # otherwise fall back on basic printing
+        # Check if ouputter was passed in the return data. If this is the case,
+        # then the return data will be a dict two keys: 'data' and 'outputter'
+        if isinstance(event['return'], dict) \
+                and set(event['return']) == set(('data', 'outputter')):
+            event_data = event['return']['data']
+            outputter = event['return']['outputter']
         else:
-            print('{tag}: {event}'.format(tag=suffix,
-                                          event=event))
+            event_data = event['return']
+            outputter = None
+
+        salt.output.display_output(event_data, outputter, self.opts)
