@@ -56,6 +56,37 @@ LIBCLOUD_FUNCS_NOT_SUPPORTED = (
 )
 
 
+def static_loader(
+        opts,
+        ext_type,
+        tag,
+        pack=None,
+        int_type=None,
+        ext_dirs=True,
+        ext_type_dirs=None,
+        base_path=None,
+        filter_name=None,
+        ):
+    funcs = LazyLoader(_module_dirs(opts,
+                                  ext_type,
+                                  tag,
+                                  int_type,
+                                  ext_dirs,
+                                  ext_type_dirs,
+                                  base_path),
+                     opts,
+                     tag=tag,
+                     pack=pack,
+                     )
+    ret = {}
+    funcs._load_all()
+    if filter_name:
+        funcs = FilterDictWrapper(funcs, filter_name)
+    for key in funcs:
+        ret[key] = funcs[key]
+    return ret
+
+
 def _module_dirs(
         opts,
         ext_type,
@@ -91,7 +122,13 @@ def _module_dirs(
     return cli_module_dirs + ext_type_types + [ext_types, sys_types]
 
 
-def minion_mods(opts, context=None, whitelist=None, include_errors=False, initial_load=False):
+def minion_mods(
+        opts,
+        context=None,
+        whitelist=None,
+        include_errors=False,
+        initial_load=False,
+        loaded_base_name=None):
     '''
     Load execution modules
 
@@ -117,14 +154,27 @@ def minion_mods(opts, context=None, whitelist=None, include_errors=False, initia
                      opts,
                      tag='module',
                      pack={'__context__': context},
-                     whitelist=whitelist)
+                     whitelist=whitelist,
+                     loaded_base_name=loaded_base_name)
+
+    # Load any provider overrides from the configuration file providers option
+    #  Note: Providers can be pkg, service, user or group - not to be confused
+    #        with cloud providers.
+    if opts.get('providers', False):
+        providers = opts.get('providers', False)
+        for mod in providers:
+            funcs = raw_mod(opts, providers[mod], ret.items())
+            if funcs:
+                for func in funcs:
+                    f_key = '{0}{1}'.format(mod, func[func.rindex('.'):])
+                    ret[f_key] = funcs[func]
+
     ret.pack['__salt__'] = ret
 
     return ret
 
 
-# TODO: fix this silly unused positional argument
-def raw_mod(opts, _, functions, mod='modules'):
+def raw_mod(opts, name, functions, mod='modules'):
     '''
     Returns a single module loaded raw and bypassing the __virtual__ function
 
@@ -137,11 +187,17 @@ def raw_mod(opts, _, functions, mod='modules'):
         testmod = salt.loader.raw_mod(__opts__, 'test', None)
         testmod['test.ping']()
     '''
-    return LazyLoader(_module_dirs(opts, mod, 'rawmodule'),
-                      opts,
-                      tag='rawmodule',
-                      virtual_enable=False,
-                      pack={'__salt__': functions})
+    loader = LazyLoader(_module_dirs(opts, mod, 'rawmodule'),
+                        opts,
+                        tag='rawmodule',
+                        virtual_enable=False,
+                        pack={'__salt__': functions})
+    # if we don't have the module, return an empty dict
+    if name not in loader.file_mapping:
+        return {}
+
+    loader._load_module(name)  # load a single module (the one passed in)
+    return dict(loader._dict)  # return a copy of *just* the funcs for `name`
 
 
 def proxy(opts, functions, whitelist=None):
@@ -283,17 +339,17 @@ def states(opts, functions, whitelist=None):
                          )
 
 
-def beacons(opts, context=None):
+def beacons(opts, functions, context=None):
     '''
     Load the beacon modules
     '''
     if context is None:
         context = {}
     return LazyLoader(_module_dirs(opts, 'beacons', 'beacons'),
-                         opts,
-                         tag='beacons',
-                         pack={'__context__': context},
-                         )
+                      opts,
+                      tag='beacons',
+                      pack={'__context__': context,
+                            '__salt__': functions})
 
 
 def search(opts, returners, whitelist=None):
@@ -692,11 +748,11 @@ class LazyLoader(salt.utils.lazy.LazyDict):
             return '{0!r} is not available.'.format(function_name)
         else:
             if self.missing_modules.get(mod_name) is not None:
-                return '{0!r}\' __virtual__ returned False: {1}'.format(mod_name, self.missing_modules[mod_name])
+                return '\'{0}\' __virtual__ returned False: {1}'.format(mod_name, self.missing_modules[mod_name])
             elif self.missing_modules.get(mod_name) is None:
-                return '{0!r}\' __virtual__ returned False'.format(mod_name)
+                return '\'{0}\' __virtual__ returned False'.format(mod_name)
             else:
-                return '{0!r} is not available.'.format(function_name)
+                return '\'{0}\' is not available.'.format(function_name)
 
     def refresh_file_mapping(self):
         '''

@@ -1684,8 +1684,13 @@ def patch(originalfile, patchfile, options='', dry_run=False):
             dry_run_opt = ' --dry-run'
     else:
         dry_run_opt = ''
-    cmd = 'patch {0}{1} "{2}" "{3}"'.format(
-        options, dry_run_opt, originalfile, patchfile)
+
+    patchpath = salt.utils.which('patch')
+    if not patchpath:
+        raise CommandExecutionError('patch executable not found. Is the distribution\'s patch package installed?')
+
+    cmd = '{0} {1}{2} "{3}" "{4}"'.format(
+        patchpath, options, dry_run_opt, originalfile, patchfile)
     return __salt__['cmd.run_all'](cmd, python_shell=False)
 
 
@@ -3405,10 +3410,10 @@ def manage_file(name,
                                     real_name,
                                     __salt__['config.backup_mode'](backup),
                                     __opts__['cachedir'])
-            except IOError:
+            except IOError as io_error:
                 __clean_tmp(sfn)
                 return _error(
-                    ret, 'Failed to commit change, permission error')
+                    ret, 'Failed to commit change: {0}'.format(io_error))
 
         if contents is not None:
             # Write the static contents to a temporary file
@@ -3443,10 +3448,10 @@ def manage_file(name,
                                         real_name,
                                         __salt__['config.backup_mode'](backup),
                                         __opts__['cachedir'])
-                except IOError:
+                except IOError as io_error:
                     __clean_tmp(tmp)
                     return _error(
-                        ret, 'Failed to commit change, permission error')
+                        ret, 'Failed to commit change: {0}'.format(io_error))
             __clean_tmp(tmp)
 
         # check for changing symlink to regular file here
@@ -3474,10 +3479,10 @@ def manage_file(name,
                                     name,
                                     __salt__['config.backup_mode'](backup),
                                     __opts__['cachedir'])
-            except IOError:
+            except IOError as io_error:
                 __clean_tmp(sfn)
                 return _error(
-                    ret, 'Failed to commit change, permission error')
+                    ret, 'Failed to commit change: {0}'.format(io_error))
 
             ret['changes']['diff'] = \
                 'Replace symbolic link with regular file'
@@ -3488,7 +3493,7 @@ def manage_file(name,
             ret['comment'] = 'File {0} updated'.format(name)
 
         elif not ret['changes'] and ret['result']:
-            ret['comment'] = 'File {0} is in the correct state'.format(name)
+            ret['comment'] = u'File {0} is in the correct state'.format(name)
         if sfn:
             __clean_tmp(sfn)
         return ret

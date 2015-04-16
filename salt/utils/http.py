@@ -2,6 +2,8 @@
 '''
 Utils for making various web calls. Primarily designed for REST, SOAP, webhooks
 and the like, but also useful for basic HTTP testing.
+
+.. versionaddedd:: 2015.2
 '''
 from __future__ import absolute_import
 
@@ -57,6 +59,12 @@ try:
 except ImportError:
     HAS_MSGPACK = False
 
+try:
+    import certifi
+    HAS_CERTIFI = True
+except ImportError:
+    HAS_CERTIFI = False
+
 log = logging.getLogger(__name__)
 JARFILE = os.path.join(syspaths.CACHE_DIR, 'cookies.txt')
 SESSIONJARFILE = os.path.join(syspaths.CACHE_DIR, 'cookies.session.p')
@@ -73,6 +81,7 @@ def query(url,
           header_file=None,
           username=None,
           password=None,
+          auth=None,
           decode=False,
           decode_type='auto',
           status=False,
@@ -232,12 +241,6 @@ def query(url,
             else:
                 req_kwargs['stream'] = True
 
-        result = sess.request(
-            method, url, params=params, data=data, **req_kwargs
-        )
-        if stream is True or handle is True:
-            return {'handle': result}
-
         # Client-side cert handling
         if cert is not None:
             if isinstance(cert, string_types):
@@ -249,6 +252,13 @@ def query(url,
             else:
                 log.error('The client-side certificate path that was passed is '
                           'not valid: {0}'.format(cert))
+
+        result = sess.request(
+            method, url, params=params, data=data, **req_kwargs
+        )
+        result.raise_for_status()
+        if stream is True or handle is True:
+            return {'handle': result}
 
         result_status_code = result.status_code
         result_headers = result.headers
@@ -310,10 +320,10 @@ def query(url,
                         cert_kwargs = {
                             'host': request.get_host(),
                             'port': port,
-                            'cert_file': cert[0]
+                            'cert_file': cert_chain[0]
                         }
-                        if len(cert) > 1:
-                            cert_kwargs['key_file'] = cert[1]
+                        if len(cert_chain) > 1:
+                            cert_kwargs['key_file'] = cert_chain[1]
                         handlers[0] = httplib.HTTPSConnection(**cert_kwargs)
 
         opener = urllib2.build_opener(*handlers)
@@ -404,7 +414,7 @@ def query(url,
         else:
             text = True
 
-        if os.path.exists(decode_out):
+        if decode_out and os.path.exists(decode_out):
             with salt.utils.fopen(decode_out, 'w') as dof:
                 dof.write(result_text)
 
@@ -451,6 +461,9 @@ def get_ca_bundle(opts=None):
     ):
         if os.path.exists(path):
             return path
+
+    if salt.utils.is_windows() and HAS_CERTIFI:
+        return certifi.where()
 
     return None
 

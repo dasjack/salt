@@ -64,7 +64,7 @@ class Client(object):
         Make sure that this path is intended for the salt master and trim it
         '''
         if not path.startswith('salt://'):
-            raise MinionError('Unsupported path: {0}'.format(path))
+            raise MinionError(u'Unsupported path: {0}'.format(path))
         return path[7:]
 
     def _file_local_list(self, dest):
@@ -592,7 +592,8 @@ class Client(object):
         try:
             query = salt.utils.http.query(
                 fixed_url,
-                stream=True
+                stream=True,
+                **get_kwargs
             )
             response = query['handle']
             chunk_size = 32 * 1024

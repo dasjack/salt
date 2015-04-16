@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import ctypes
+from pprint import pformat
 import os
 import re
 import time
@@ -531,7 +532,23 @@ class Publisher(multiprocessing.Process):
                 try:
                     package = pull_sock.recv()
                     unpacked_package = salt.payload.unpackage(package)
-                    payload = unpacked_package['payload']
+                    try:
+                        payload = unpacked_package['payload']
+                    except (KeyError,) as exc:
+                        # somehow not packaged !?
+                        if 'enc' in payload and 'load' in payload:
+                            payload = package
+                        else:
+                            try:
+                                log.error(
+                                    "Invalid payload: {0}".format(
+                                        pformat(unpacked_package), exc_info=True))
+                            except Exception:
+                                # dont fail on a format error here !
+                                # but log something as it is hard to track down
+                                log.error("Received invalid payload", exc_info=True)
+                            raise exc
+
                     if self.opts['zmq_filtering']:
                         # if you have a specific topic list, use that
                         if 'topic_lst' in unpacked_package:
@@ -614,6 +631,9 @@ class ReqServer(object):
                 if exc.errno == errno.EINTR:
                     continue
                 raise exc
+            except KeyboardInterrupt:
+                log.warn('Stopping the Salt Master')
+                raise SystemExit('\nExiting on Ctrl-c')
 
     def __bind(self):
         '''
@@ -644,7 +664,11 @@ class ReqServer(object):
         '''
         Start up the ReqServer
         '''
-        self.__bind()
+        try:
+            self.__bind()
+        except KeyboardInterrupt:
+            log.warn('Stopping the Salt Master')
+            raise SystemExit('\nExiting on Ctrl-c')
 
     def destroy(self):
         if hasattr(self, 'clients') and self.clients.closed is False:
@@ -715,6 +739,13 @@ class MWorker(multiprocessing.Process):
                     raise
                 # catch all other exceptions, so we don't go defunct
                 except Exception as exc:
+                    # since we are in an exceptional state, lets attempt to tell
+                    # the minion we have a problem, otherwise the minion will get
+                    # no response and be forced to wait for their max timeout
+                    try:
+                        socket.send('Unexpected Error in Mworker')
+                    except:  # pylint: disable=W0702
+                        pass
                     # Properly handle EINTR from SIGUSR1
                     if isinstance(exc, zmq.ZMQError) and exc.errno == errno.EINTR:
                         continue
@@ -1250,9 +1281,9 @@ class AESFuncs(object):
         if any(key not in load for key in ('return', 'jid', 'id')):
             return None
         # if we have a load, save it
-        if 'load' in load:
+        if load.get('load'):
             fstr = '{0}.save_load'.format(self.opts['master_job_cache'])
-            self.mminion.returners[fstr](load['jid'], load)
+            self.mminion.returners[fstr](load['jid'], load['load'])
 
         # Format individual return loads
         for key, item in load['return'].items():
@@ -1261,6 +1292,10 @@ class AESFuncs(object):
                    'return': item}
             if 'master_id' in load:
                 ret['master_id'] = load['master_id']
+            if 'fun' in load:
+                ret['fun'] = load['fun']
+            if 'arg' in load:
+                ret['fun_args'] = load['arg']
             if 'out' in load:
                 ret['out'] = load['out']
             self._return(ret)

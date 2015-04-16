@@ -392,29 +392,22 @@ def get_containers(all=True,
         status['host'] = {}
         status['host']['interfaces'] = __salt__['network.interfaces']()
 
-    containers = ret = client.containers(all=all,
-                                         trunc=trunc,
-                                         since=since,
-                                         before=before,
-                                         limit=limit)
+    containers = client.containers(all=all,
+                                   trunc=trunc,
+                                   since=since,
+                                   before=before,
+                                   limit=limit)
 
     # Optionally for each container get more granular information from them
     # by inspecting the container
     if inspect:
-        ret = []
         for container in containers:
             container_id = container.get('Id')
             if container_id:
                 inspect = _get_container_infos(container_id)
-                container['detail'] = {}
-                for key, value in inspect.items():
-                    container['detail'][key] = value
-            ret.append(container)
+                container['detail'] = inspect.copy()
 
-    if ret:
-        _valid(status, comment='All containers in out', out=ret)
-    else:
-        _invalid(status)
+    _valid(status, comment='All containers in out', out=containers)
 
     return status
 
@@ -1031,7 +1024,7 @@ def remove_container(container, force=False, v=False):
         remove a running container, Default is ``False``
 
     v
-        verbose mode, Default is ``False``
+        remove the volumes associated to the container, Default is ``False``
 
     CLI Example:
 
@@ -1712,7 +1705,7 @@ def push(repo, tag=None, quiet=False, insecure_registry=False):
                                        oper='>=',
                                        ver2='0.5.0'):
             kwargs['insecure_registry'] = insecure_registry
-        ret = client.pull(repo, **kwargs)
+        ret = client.push(repo, **kwargs)
         if ret:
             image_logs, infos = _parse_image_multilogs_string(ret)
             if image_logs:
@@ -1848,6 +1841,8 @@ def load(imagepath):
 
 def save(image, filename):
     '''
+    .. versionadded:: 2015.2.0
+
     Save the specified image to filename from docker
     e.g. `docker save image > filename`
 
@@ -1875,7 +1870,7 @@ def save(image, filename):
 
     if ok:
         try:
-            dockercmd = ['docker', '-o', filename, 'save', image]
+            dockercmd = ['docker', 'save', '-o', filename, image]
             ret = __salt__['cmd.run'](dockercmd)
             if ((isinstance(ret, dict) and
                 ('retcode' in ret) and
@@ -2062,7 +2057,7 @@ def get_container_root(container):
         'containers',
         _get_container_infos(container)['Id'],
     )
-    default_rootfs = os.path.join(default_path, 'roofs')
+    default_rootfs = os.path.join(default_path, 'rootfs')
     rootfs_re = re.compile(r'^lxc.rootfs\s*=\s*(.*)\s*$', re.U)
     try:
         lxcconfig = os.path.join(default_path, 'config.lxc')

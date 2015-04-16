@@ -69,6 +69,7 @@ STATE_RUNTIME_KEYWORDS = frozenset([
     'check_cmd',
     'fail_hard',
     'onlyif',
+    'unless',
     'order',
     'reload_modules',
     'reload_grains',
@@ -650,7 +651,7 @@ class State(object):
             else:
                 low_data_onlyif = low_data['onlyif']
             for entry in low_data_onlyif:
-                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd != 0 and ret['result'] is False:
                     ret.update({'comment': 'onlyif execution failed',
@@ -667,7 +668,7 @@ class State(object):
             else:
                 low_data_unless = low_data['unless']
             for entry in low_data_unless:
-                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd == 0 and ret['result'] is False:
                     ret.update({'comment': 'unless execution succeeded',
@@ -689,7 +690,7 @@ class State(object):
         if 'shell' in self.opts['grains']:
             cmd_opts['shell'] = self.opts['grains'].get('shell')
         for entry in low_data['check_cmd']:
-            cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+            cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0 and ret['result'] is False:
                 ret.update({'comment': 'check_cmd determined the state succeeded', 'result': True})
@@ -2480,7 +2481,6 @@ class BaseHighState(object):
         '''
         Render a state file and retrieve all of the include states
         '''
-        err = ''
         errors = []
         if not local:
             state_data = self.client.get_state(sls, saltenv)
@@ -2495,7 +2495,8 @@ class BaseHighState(object):
         if not fn_:
             errors.append(
                 'Specified SLS {0} in saltenv {1} is not '
-                'available on the salt master'.format(sls, saltenv)
+                'available on the salt master or through a configured '
+                'fileserver'.format(sls, saltenv)
             )
         state = None
         try:
@@ -3015,7 +3016,8 @@ class HighState(BaseHighState):
     stack = []
 
     def __init__(self, opts, pillar=None, jid=None):
-        self.client = salt.fileclient.get_file_client(opts)
+        self.opts = opts
+        self.client = salt.fileclient.get_file_client(self.opts)
         BaseHighState.__init__(self, opts)
         self.state = State(self.opts, pillar, jid)
         self.matcher = salt.minion.Matcher(self.opts)

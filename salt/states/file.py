@@ -1402,14 +1402,12 @@ def managed(name,
                 contents,
                 **kwargs
             )
-            if not ret['changes']:
-                ret['result'] = True
-            else:
-                ret['result'] = None
 
             if ret['changes']:
+                ret['result'] = None
                 ret['comment'] = 'The file {0} is set to be changed'.format(name)
             else:
+                ret['result'] = True
                 ret['comment'] = 'The file {0} is in the correct state'.format(name)
 
             return ret
@@ -2148,7 +2146,7 @@ def recurse(name,
             ret['changes'][path] = _ret['changes']
 
     def manage_file(path, source):
-        source = '{0}|{1}'.format(source[:7], source[7:])
+        source = u'{0}|{1}'.format(source[:7], source[7:])
         if clean and os.path.exists(path) and os.path.isdir(path):
             _ret = {'name': name, 'changes': {}, 'result': True, 'comment': ''}
             if __opts__['test']:
@@ -2303,7 +2301,7 @@ def recurse(name,
             manage_directory(dirname)
             vdir.add(dirname)
 
-        src = 'salt://{0}'.format(fn_)
+        src = u'salt://{0}'.format(fn_)
         manage_file(dest, src)
 
     if include_empty:
@@ -2343,7 +2341,7 @@ def recurse(name,
 
     # Flatten comments until salt command line client learns
     # to display structured comments in a readable fashion
-    ret['comment'] = '\n'.join('\n#### {0} ####\n{1}'.format(
+    ret['comment'] = '\n'.join(u'\n#### {0} ####\n{1}'.format(
         k, v if isinstance(v, string_types) else '\n'.join(v)
     ) for (k, v) in six.iteritems(ret['comment'])).strip()
 
@@ -2413,13 +2411,13 @@ def replace(name,
                                        show_changes=show_changes)
 
     if changes:
-        ret['changes'] = {'diff': changes}
         if __opts__['test']:
             ret['result'] = None
-            ret['comment'] = 'Changes would have been made'
+            ret['comment'] = 'Changes would have been made:\ndiff:\n{0}'.format(changes)
         else:
             ret['result'] = True
             ret['comment'] = 'Changes were made'
+            ret['changes'] = {'diff': changes}
     else:
         ret['result'] = True
         ret['comment'] = 'No changes needed to be made'
@@ -3823,7 +3821,8 @@ def _merge_dict(obj, k, v):
 
 
 def serialize(name,
-              dataset,
+              dataset=None,
+              dataset_pillar=None,
               user=None,
               group=None,
               mode=None,
@@ -3842,7 +3841,17 @@ def serialize(name,
         The location of the file to create
 
     dataset
-        the dataset that will be serialized
+        The dataset that will be serialized
+
+    dataset_pillar
+        Operates like ``dataset``, but draws from a value stored in pillar,
+        using the pillar path syntax used in :mod:`pillar.get
+        <salt.modules.pillar.get>`. This is useful when the pillar value
+        contains newlines, as referencing a pillar variable using a jinja/mako
+        template can result in YAML formatting issues due to the newlines
+        causing indentation mismatches.
+
+        .. versionadded:: FIXME
 
     formatter
         Write the data as this format. Supported output formats:
@@ -3943,6 +3952,17 @@ def serialize(name,
             return ret
 
     formatter = kwargs.pop('formatter', 'yaml').lower()
+
+    if len([_f for _f in [dataset, dataset_pillar] if _f]) > 1:
+        return _error(
+            ret, 'Only one of \'dataset\' and \'dataset_pillar\' is permitted')
+
+    if dataset_pillar:
+        dataset = __salt__['pillar.get'](dataset_pillar)
+
+    if dataset is None:
+        return _error(
+            ret, 'Neither \'dataset\' nor \'dataset_pillar\' was defined')
 
     if merge_if_exists:
         if os.path.isfile(name):

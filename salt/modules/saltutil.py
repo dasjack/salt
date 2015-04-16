@@ -42,6 +42,7 @@ import salt.payload
 import salt.state
 import salt.client
 import salt.client.ssh.client
+import salt.config
 import salt.runner
 import salt.utils
 import salt.utils.process
@@ -152,7 +153,7 @@ def _sync(form, saltenv=None):
                 break
             for emptydir in emptydirs:
                 touched = True
-                os.rmdir(emptydir)
+                shutil.rmtree(emptydir, ignore_errors=True)
     # Dest mod_dir is touched? trigger reload if requested
     if touched:
         mod_file = os.path.join(__opts__['cachedir'], 'module_refresh')
@@ -765,7 +766,16 @@ def runner(fun, **kwargs):
 
         salt '*' saltutil.runner jobs.list_jobs
     '''
-    rclient = salt.runner.RunnerClient(__opts__)
+    kwargs = salt.utils.clean_kwargs(**kwargs)
+
+    if 'master_job_cache' not in __opts__:
+        master_config = os.path.join(os.path.dirname(__opts__['conf_file']),
+                                     'master')
+        master_opts = salt.config.master_config(master_config)
+        rclient = salt.runner.RunnerClient(master_opts)
+    else:
+        rclient = salt.runner.RunnerClient(__opts__)
+
     return rclient.cmd(fun, [], kwarg=kwargs)
 
 

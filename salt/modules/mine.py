@@ -12,6 +12,7 @@ import time
 # Import salt libs
 import salt.crypt
 import salt.payload
+import salt.utils
 import salt.utils.network
 import salt.utils.event
 from salt.exceptions import SaltClientError
@@ -157,6 +158,7 @@ def send(func, *args, **kwargs):
         salt '*' mine.send network.ip_addrs eth0
         salt '*' mine.send eth0_ip_addrs mine_function=network.ip_addrs eth0
     '''
+    kwargs = salt.utils.clean_kwargs(**kwargs)
     mine_func = kwargs.pop('mine_function', func)
     if mine_func not in __salt__:
         return False
@@ -211,6 +213,7 @@ def get(tgt, fun, expr_form='glob'):
         grain_pcre
         compound
         pillar
+        pillar_pcre
 
     Note that all pillar matches, whether using the compound matching system or
     the pillar matching system, will be exact matches, with globbing disabled.
@@ -233,6 +236,7 @@ def get(tgt, fun, expr_form='glob'):
                      'ipcidr': __salt__['match.ipcidr'],
                      'compound': __salt__['match.compound'],
                      'pillar': __salt__['match.pillar'],
+                     'pillar_pcre': __salt__['match.pillar_pcre'],
                      }[expr_form](tgt)
         if is_target:
             data = __salt__['data.getval']('mine_cache')

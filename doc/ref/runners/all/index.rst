@@ -24,10 +24,12 @@ Full list of runner modules
     lxc
     manage
     mine
+    nacl
     network
     pagerduty
     pillar
     queue
+    sdb
     search
     state
     survey

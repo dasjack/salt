@@ -1209,13 +1209,16 @@ class SaltRaetSetupBeacon(ioflo.base.deeding.Deed):
     Create the Beacon subsystem
     '''
     Ioinits = {'opts': '.salt.opts',
-               'beacon': '.salt.beacon'}
+               'beacon': '.salt.beacon',
+               'modules': '.salt.loader.modules'}
 
     def action(self):
         '''
         Run the beacons
         '''
-        self.beacon.value = salt.beacons.Beacon(self.opts.value)
+        self.beacon.value = salt.beacons.Beacon(
+                self.opts.value,
+                self.modules.value)
 
 
 class SaltRaetBeacon(ioflo.base.deeding.Deed):
@@ -1225,6 +1228,7 @@ class SaltRaetBeacon(ioflo.base.deeding.Deed):
     Ioinits = {'opts': '.salt.opts',
                'modules': '.salt.loader.modules',
                'master_events': '.salt.var.master_events',
+               'event': '.salt.event.events',
                'beacon': '.salt.beacon'}
 
     def action(self):
@@ -1235,7 +1239,9 @@ class SaltRaetBeacon(ioflo.base.deeding.Deed):
             b_conf = self.modules.value['config.merge']('beacons')
             if b_conf:
                 try:
-                    self.master_events.value.extend(self.beacon.value.process(b_conf))
+                    events = self.beacon.value.process(b_conf)
+                    self.master_events.value.extend(events)
+                    self.event.value.extend(events)
                 except Exception:
                     log.error('Error in the beacon system: ', exc_info=True)
         return []

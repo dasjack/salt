@@ -54,6 +54,23 @@ def __virtual__():
     return __virtualname__
 
 
+def _python_shell_default(python_shell, __pub_jid):
+    '''
+    Set python_shell default based on remote execution and __opts__['cmd_safe']
+    '''
+    try:
+        # Default to python_shell=True when run directly from remote execution
+        # system. Cross-module calls won't have a jid.
+        if __pub_jid and python_shell is None:
+            return True
+        elif __opts__.get('cmd_safe', True) is False and python_shell is None:
+            # Override-switch for python_shell
+            return True
+    except NameError:
+        pass
+    return python_shell
+
+
 def _chroot_pids(chroot):
     pids = []
     for root in glob.glob('/proc/[0-9]*/root'):
@@ -361,7 +378,10 @@ def _run(cmd,
         )
 
     if python_shell is not True and not isinstance(cmd, list):
-        cmd = shlex.split(cmd)
+        posix = True
+        if salt.utils.is_windows():
+            posix = False
+        cmd = shlex.split(cmd, posix=posix)
     if not use_vt:
         # This is where the magic happens
         try:
@@ -610,12 +630,8 @@ def run(cmd,
 
         salt '*' cmd.run cmd='sed -e s/=/:/g'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
     ret = _run(cmd,
                runas=runas,
                shell=shell,
@@ -652,7 +668,7 @@ def run(cmd,
                 # Rewrite file
                 with salt.utils.fopen(jid_file, 'w+b') as fn_:
                     fn_.write(serial.dumps(jid_dict))
-        except NameError:
+        except (NameError, TypeError):
             # Avoids errors from msgpack not being loaded in salt-ssh
             pass
 
@@ -737,6 +753,10 @@ def shell(cmd,
 
         salt '*' cmd.shell cmd='sed -e s/=/:/g'
     '''
+    if 'python_shell' in kwargs:
+        python_shell = kwargs.pop('python_shell')
+    else:
+        python_shell = True
     return run(cmd,
         cwd=cwd,
         stdin=stdin,
@@ -754,7 +774,7 @@ def shell(cmd,
         ignore_retcode=ignore_retcode,
         saltenv=saltenv,
         use_vt=use_vt,
-        python_shell=True,
+        python_shell=python_shell,
         **kwargs)
 
 
@@ -804,12 +824,8 @@ def run_stdout(cmd,
 
         salt '*' cmd.run_stdout "grep f" stdin='one\\ntwo\\nthree\\nfour\\nfive\\n'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
     ret = _run(cmd,
                runas=runas,
                cwd=cwd,
@@ -892,12 +908,8 @@ def run_stderr(cmd,
 
         salt '*' cmd.run_stderr "grep f" stdin='one\\ntwo\\nthree\\nfour\\nfive\\n'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
     ret = _run(cmd,
                runas=runas,
                cwd=cwd,
@@ -980,12 +992,8 @@ def run_all(cmd,
 
         salt '*' cmd.run_all "grep f" stdin='one\\ntwo\\nthree\\nfour\\nfive\\n'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
     ret = _run(cmd,
                runas=runas,
                cwd=cwd,
@@ -1187,12 +1195,8 @@ def script(source,
 
         salt '*' cmd.script salt://scripts/runme.sh stdin='one\\ntwo\\nthree\\nfour\\nfive\\n'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
 
     def _cleanup_tempfile(path):
         try:
@@ -1300,12 +1304,8 @@ def script_retcode(source,
 
         salt '*' cmd.script_retcode salt://scripts/runme.sh stdin='one\\ntwo\\nthree\\nfour\\nfive\\n'
     '''
-    try:
-        if __opts__.get('cmd_safe', True) is False and python_shell is None:
-            # Override-switch for python_shell
-            python_shell = True
-    except NameError:
-        pass
+    python_shell = _python_shell_default(python_shell,
+                                         kwargs.get('__pub_jid', ''))
     if isinstance(__env__, string_types):
         salt.utils.warn_until(
             'Boron',
@@ -1376,7 +1376,7 @@ def exec_code(lang, code, cwd=None):
     '''
     Pass in two strings, the first naming the executable language, aka -
     python2, python3, ruby, perl, lua, etc. the second string containing
-    the code you wish to execute. The stdout and stderr will be returned
+    the code you wish to execute. The stdout will be returned.
 
     CLI Example:
 
@@ -1384,11 +1384,27 @@ def exec_code(lang, code, cwd=None):
 
         salt '*' cmd.exec_code ruby 'puts "cheese"'
     '''
+    return exec_code_all(lang, code, cwd)['stdout']
+
+
+def exec_code_all(lang, code, cwd=None):
+    '''
+    Pass in two strings, the first naming the executable language, aka -
+    python2, python3, ruby, perl, lua, etc. the second string containing
+    the code you wish to execute. All cmd artifacts (stdout, stderr, retcode, pid)
+    will be returned.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' cmd.exec_code_all ruby 'puts "cheese"'
+    '''
     codefile = salt.utils.mkstemp()
     with salt.utils.fopen(codefile, 'w+t') as fp_:
         fp_.write(code)
     cmd = [lang, codefile]
-    ret = run(cmd, cwd=cwd, python_shell=False)
+    ret = run_all(cmd, cwd=cwd, python_shell=False)
     os.remove(codefile)
     return ret
 
@@ -1520,3 +1536,30 @@ def _is_valid_shell(shell):
         return True
     else:
         return False
+
+
+def shells():
+    '''
+    Lists the valid shells on this system via the /etc/shells file
+
+    CLI Example::
+
+        salt '*' cmd.shells
+    '''
+    shells_fn = '/etc/shells'
+    ret = []
+    if os.path.exists(shells_fn):
+        try:
+            with salt.utils.fopen(shells_fn, 'r') as shell_fp:
+                lines = shell_fp.read().splitlines()
+            for line in lines:
+                line = line.strip()
+                if line.startswith('#'):
+                    continue
+                elif not line:
+                    continue
+                else:
+                    ret.append(line)
+        except OSError:
+            log.error("File '{0}' was not found".format(shells_fn))
+    return ret
