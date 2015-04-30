@@ -64,7 +64,7 @@ class Client(object):
         Make sure that this path is intended for the salt master and trim it
         '''
         if not path.startswith('salt://'):
-            raise MinionError('Unsupported path: {0}'.format(path))
+            raise MinionError(u'Unsupported path: {0}'.format(path))
         return path[7:]
 
     def _file_local_list(self, dest):
@@ -592,7 +592,8 @@ class Client(object):
         try:
             query = salt.utils.http.query(
                 fixed_url,
-                stream=True
+                stream=True,
+                **get_kwargs
             )
             response = query['handle']
             chunk_size = 32 * 1024
@@ -925,6 +926,13 @@ class RemoteClient(Client):
         else:
             self.auth = ''
 
+    def _refresh_channel(self):
+        '''
+        Reset the channel, in the event of an interruption
+        '''
+        self.channel = salt.transport.Channel.factory(self.opts)
+        return self.channel
+
     def get_file(self,
                  path,
                  dest='',
@@ -938,6 +946,18 @@ class RemoteClient(Client):
         dest is omitted, then the downloaded file will be placed in the minion
         cache
         '''
+
+        # Check if file exists on server, before creating files and
+        # directories
+        hash_server = self.hash_file(path, saltenv)
+        if hash_server == '':
+            log.debug(
+                'Could not find file from saltenv {0!r}, {1!r}'.format(
+                    saltenv, path
+                )
+            )
+            return False
+
         if env is not None:
             salt.utils.warn_until(
                 'Boron',
@@ -958,7 +978,6 @@ class RemoteClient(Client):
 
         if dest2check and os.path.isfile(dest2check):
             hash_local = self.hash_file(dest2check, saltenv)
-            hash_server = self.hash_file(path, saltenv)
             if hash_local == hash_server:
                 log.info(
                     'Fetching file from saltenv {0!r}, ** skipped ** '
@@ -999,6 +1018,7 @@ class RemoteClient(Client):
             data = self.channel.send(load)
             if 'data' not in data:
                 log.error('Data is {0}'.format(data))
+                self._refresh_channel()
             if not data['data']:
                 if not fn_ and data['dest']:
                     # This is a 0 byte file on the master

@@ -7,7 +7,9 @@ Required python modules: syslog, json
 The syslog returner simply reuses the operating system's syslog
 facility to log return data
 
-To use the syslog returner, append '--return syslog' to the salt command. ex:
+To use the syslog returner, append '--return syslog' to the salt command.
+
+.. code-block:: bash
 
     salt '*' test.ping --return syslog
 
@@ -42,7 +44,7 @@ def returner(ret):
     syslog.syslog(syslog.LOG_INFO, 'salt-minion: {0}'.format(json.dumps(ret)))
 
 
-def prep_jid(nocache, passed_jid=None):  # pylint: disable=unused-argument
+def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''

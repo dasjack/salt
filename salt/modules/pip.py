@@ -1,6 +1,77 @@
 # -*- coding: utf-8 -*-
-'''
+r'''
 Install Python packages with pip to either the system or a virtualenv
+
+Windows Support
+===============
+
+.. versionadded:: 2014.7.4
+
+Salt now uses a portable python. As a result the entire pip module is now
+functional on the salt installation itself. You can pip install dependencies
+for your custom modules. You can even upgrade salt itself using pip. For this
+to work properly, you must specify the Current Working Directory (``cwd``) and
+the Pip Binary (``bin_env``) salt should use.
+
+For example, the following command will list all software installed using pip
+to your current salt environment:
+
+.. code-block:: bat
+
+   salt <minion> pip.list cwd='C:\salt\bin\Scripts' bin_env='C:\salt\bin\Scripts\pip.exe'
+
+Specifying the ``cwd`` and ``bin_env`` options ensures you're modifying the
+salt environment. If these are omitted, it will default to the local
+installation of python. If python is not installed locally it will fail saying
+it couldn't find pip.
+
+State File Support
+------------------
+
+This functionality works in states as well. If you need to pip install colorama
+with a state, for example, the following will work:
+
+.. code-block:: yaml
+
+   install_colorama:
+     pip.installed:
+       - name: colorama
+       - cwd: 'C:\salt\bin\scripts'
+       - bin_env: 'C:\salt\bin\scripts\pip.exe'
+       - upgrade: True
+
+Upgrading Salt using Pip
+------------------------
+
+You can now update salt using pip to any version from the 2014.7 branch
+forward. Previous version require recompiling some of the dependencies which is
+painful in windows.
+
+To do this you just use pip with git to update to the version you want and then
+restart the service. Here is a sample state file that upgrades salt to the head
+of the 2015.2 branch:
+
+.. code-block:: yaml
+
+   install_salt:
+     pip.installed:
+       - cwd: 'C:\salt\bin\scripts'
+       - bin_env: 'C:\salt\bin\scripts\pip.exe'
+       - editable: git+https://github.com/saltstack/salt@2015.2#egg=salt
+       - upgrade: True
+
+   restart_service:
+     service.running:
+       - name: salt-minion
+       - enable: True
+       - watch:
+         - pip: install_salt
+
+.. note::
+   If you're having problems, you might try doubling the back slashes. For
+   example, cwd: 'C:\\salt\\bin\\scripts'. Sometimes python thinks the single
+   back slash is an escape character.
+
 '''
 from __future__ import absolute_import
 
@@ -38,12 +109,14 @@ def _get_pip_bin(bin_env):
         which_result = __salt__['cmd.which_bin'](['pip2', 'pip', 'pip-python'])
         if which_result is None:
             raise CommandNotFoundError('Could not find a `pip` binary')
+        if salt.utils.is_windows():
+            return which_result.encode('string-escape')
         return which_result
 
     # try to get pip bin from env
     if os.path.isdir(bin_env):
         if salt.utils.is_windows():
-            pip_bin = os.path.join(bin_env, 'Scripts', 'pip.exe')
+            pip_bin = os.path.join(bin_env, 'Scripts', 'pip.exe').encode('string-escape')
         else:
             pip_bin = os.path.join(bin_env, 'bin', 'pip')
         if os.path.isfile(pip_bin):
@@ -53,8 +126,39 @@ def _get_pip_bin(bin_env):
     return bin_env
 
 
+def _process_salt_url(path, saltenv):
+    '''
+    Process 'salt://' and '?saltenv=' out of `path` and return the stripped
+    path and the saltenv.
+    '''
+    path = path.split('salt://', 1)[-1]
+
+    env_splitter = '?saltenv='
+    if '?env=' in path:
+        salt.utils.warn_until(
+            'Boron',
+            'Passing a salt environment should be done using \'saltenv\' '
+            'not \'env\'. This functionality will be removed in Salt Boron.'
+        )
+        env_splitter = '?env='
+    try:
+        path, saltenv = path.split(env_splitter)
+    except ValueError:
+        pass
+
+    return path, saltenv
+
+
 def _get_cached_requirements(requirements, saltenv):
-    '''Get the location of a cached requirements file; caching if necessary.'''
+    '''
+    Get the location of a cached requirements file; caching if necessary.
+    '''
+
+    requirements_file, saltenv = _process_salt_url(requirements, saltenv)
+    if requirements_file not in __salt__['cp.list_master'](saltenv):
+        # Requirements file does not exist in the given saltenv.
+        return False
+
     cached_requirements = __salt__['cp.is_cached'](
         requirements, saltenv
     )
@@ -266,6 +370,11 @@ def install(pkgs=None,  # pylint: disable=R0912,R0913,R0914
     activate
         Activates the virtual environment, if given via bin_env,
         before running install.
+
+        .. deprecated:: 2014.7.2
+            If `bin_env` is given, pip will already be sourced from that
+            virualenv, making `activate` effectively a noop.
+
     pre_releases
         Include pre-releases in the available versions
     cert
@@ -315,6 +424,14 @@ def install(pkgs=None,  # pylint: disable=R0912,R0913,R0914
         )
         bin_env = env
 
+    if activate:
+        salt.utils.warn_until(
+                'Boron',
+                'Passing \'activate\' to the pip module is deprecated. If '
+                'bin_env refers to a virtualenv, there is no need to activate '
+                'that virtualenv before using pip to install packages in it.'
+        )
+
     if isinstance(__env__, string_types):
         salt.utils.warn_until(
             'Boron',
@@ -326,10 +443,6 @@ def install(pkgs=None,  # pylint: disable=R0912,R0913,R0914
         saltenv = __env__
 
     cmd = [_get_pip_bin(bin_env), 'install']
-
-    if activate and bin_env:
-        if not salt.utils.is_windows():
-            cmd = ['.', _get_env_activate(bin_env), '&&'] + cmd
 
     cleanup_requirements, error = _process_requirements(requirements=requirements, cmd=cmd,
                                                         saltenv=saltenv, user=user,
@@ -509,9 +622,14 @@ def install(pkgs=None,  # pylint: disable=R0912,R0913,R0914
         # they would survive the previous line (in the pip.installed state).
         # Put the commas back in while making sure the names are contained in
         # quotes, this allows for proper version spec passing salt>=0.17.0
-        cmd.extend(
-            ['{0!r}'.format(p.replace(';', ',')) for p in pkgs]
-        )
+        if salt.utils.is_windows():
+            cmd.extend(
+                ['{0}'.format(p.replace(';', ',')) for p in pkgs]
+            )
+        else:
+            cmd.extend(
+                ['{0!r}'.format(p.replace(';', ',')) for p in pkgs]
+            )
 
     if editable:
         egg_match = re.compile(r'(?:#|#.*?&)egg=([^&]*)')
@@ -855,7 +973,7 @@ def upgrade_available(pkg,
                       user=None,
                       cwd=None):
     '''
-    .. versionadded:: Lithium
+    .. versionadded:: 2015.2.0
 
     Check whether or not an upgrade is available for a given package
 
@@ -873,7 +991,7 @@ def upgrade(bin_env=None,
             cwd=None,
             use_vt=False):
     '''
-    .. versionadded:: Lithium
+    .. versionadded:: 2015.2.0
 
     Upgrades outdated pip packages
 

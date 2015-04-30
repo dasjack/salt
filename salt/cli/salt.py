@@ -5,6 +5,8 @@ from __future__ import absolute_import
 import os
 import sys
 
+import salt.utils.job
+from salt._compat import string_types
 from salt.utils import parsers, print_cli
 from salt.utils.verify import verify_files
 from salt.exceptions import (
@@ -78,7 +80,7 @@ class SaltCMD(parsers.SaltCMDOptionParser):
 
             if self.options.static:
 
-                batch = salt.cli.batch.Batch(self.config, quiet=True)
+                batch = salt.cli.batch.Batch(self.config, eauth=eauth, quiet=True)
 
                 ret = {}
 
@@ -88,10 +90,14 @@ class SaltCMD(parsers.SaltCMDOptionParser):
                 self._output_ret(ret, '')
 
             else:
-                batch = salt.cli.batch.Batch(self.config)
+                batch = salt.cli.batch.Batch(self.config, eauth=eauth)
                 # Printing the output is already taken care of in run() itself
                 for res in batch.run():
-                    pass
+                    if self.options.failhard:
+                        for ret in res.itervalues():
+                            retcode = salt.utils.job.get_retcode(ret)
+                            if retcode != 0:
+                                sys.exit(retcode)
 
         else:
             if self.options.timeout <= 0:
@@ -211,7 +217,7 @@ class SaltCMD(parsers.SaltCMDOptionParser):
                     if retcodes.count(0) < len(retcodes):
                         sys.exit(11)
 
-            except (SaltInvocationError, EauthAuthenticationError) as exc:
+            except (SaltInvocationError, EauthAuthenticationError, SaltClientError) as exc:
                 ret = str(exc)
                 out = ''
                 self._output_ret(ret, out)
@@ -233,7 +239,11 @@ class SaltCMD(parsers.SaltCMDOptionParser):
         not_return_counter = 0
         not_return_minions = []
         for each_minion in ret:
-            if ret[each_minion] == "Minion did not return":
+            minion_ret = ret[each_minion].get('ret')
+            if (
+                    isinstance(minion_ret, string_types)
+                    and minion_ret.startswith("Minion did not return")
+            ):
                 not_return_counter += 1
                 not_return_minions.append(each_minion)
             else:
@@ -288,8 +298,9 @@ class SaltCMD(parsers.SaltCMDOptionParser):
             ret[key] = data['ret']
             if 'out' in data:
                 out = data['out']
-            if 'retcode' in data:
-                retcode = data['retcode']
+            ret_retcode = salt.utils.job.get_retcode(data)
+            if ret_retcode > retcode:
+                retcode = ret_retcode
         return ret, out, retcode
 
     def _format_error(self, minion_error):
@@ -308,6 +319,8 @@ class SaltCMD(parsers.SaltCMDOptionParser):
         if isinstance(ret, str):
             self.exit(2, '{0}\n'.format(ret))
         for host in ret:
+            if ret[host] == 'Minion did not return. [Not connected]':
+                continue
             for fun in ret[host]:
                 if fun not in docs:
                     if ret[host][fun]:

@@ -221,7 +221,7 @@ def _find_install_targets(name=None,
     # Get the ignore_types list if any from the pkg_verify argument
     if isinstance(pkg_verify, list) and any(x.get('ignore_types') is not None
                                         for x in pkg_verify
-                                        if type(x) is _OrderedDict
+                                        if isinstance(x, _OrderedDict)
                                         and 'ignore_types' in x):
         ignore_types = next(x.get('ignore_types')
                             for x in pkg_verify
@@ -774,7 +774,7 @@ def installed(
         Whether to install the packages marked as recommended.  Default is True.
         Currently only works with APT based systems.
 
-        .. versionadded:: Lithium
+        .. versionadded:: 2015.2.0
 
     .. code-block:: yaml
 
@@ -786,7 +786,7 @@ def installed(
         Only upgrade the packages, if they are already installed. Default is False.
         Currently only works with APT based systems.
 
-        .. versionadded:: Lithium
+        .. versionadded:: 2015.2.0
 
     .. code-block:: yaml
 
@@ -795,6 +795,12 @@ def installed(
             - only_upgrade: True
 
     '''
+    if isinstance(pkgs, list) and len(pkgs) == 0:
+        return {'name': name,
+                'changes': {},
+                'result': True,
+                'comment': 'No packages to install provided'}
+
     kwargs['saltenv'] = __env__
     rtag = __gen_rtag()
     refresh = bool(
@@ -900,11 +906,11 @@ def installed(
                 summary = ', '.join([_get_desired_pkg(x, targets)
                                      for x in targets])
             comment.append('The following packages are set to be '
-                           'installed/updated: {0}.'.format(summary))
+                           'installed/updated: {0}'.format(summary))
         if to_unpurge:
             comment.append(
                 'The following packages will have their selection status '
-                'changed from \'purge\' to \'install\': {0}.'
+                'changed from \'purge\' to \'install\': {0}'
                 .format(', '.join(to_unpurge))
             )
         if to_reinstall:
@@ -1020,7 +1026,7 @@ def installed(
                                  for x in modified])
         if len(summary) < 20:
             comment.append('The following packages were installed/updated: '
-                           '{0}.'.format(summary))
+                           '{0}'.format(summary))
         else:
             comment.append(
                 '{0} targeted package{1} {2} installed/updated.'.format(
@@ -1050,7 +1056,7 @@ def installed(
                                  for x in not_modified])
         if len(not_modified) <= 20:
             comment.append('The following packages were already installed: '
-                           '{0}.'.format(summary))
+                           '{0}'.format(summary))
         else:
             comment.append(
                 '{0} targeted package{1} {2} already installed.'.format(
@@ -1073,7 +1079,7 @@ def installed(
             summary = ', '.join([_get_desired_pkg(x, desired)
                                  for x in failed])
         comment.insert(0, 'The following packages failed to '
-                          'install/update: {0}.'.format(summary))
+                          'install/update: {0}'.format(summary))
         result = False
 
     if failed_hold:
@@ -1181,7 +1187,7 @@ def latest(
         Whether to install the packages marked as recommended.  Default is True.
         Currently only works with APT based systems.
 
-        .. versionadded:: Lithium
+        .. versionadded:: 2015.2.0
 
     .. code-block:: yaml
 
@@ -1193,7 +1199,7 @@ def latest(
         Only upgrade the packages, if they are already installed. Default is False.
         Currently only works with APT based systems.
 
-        .. versionadded:: Lithium
+        .. versionadded:: 2015.2.0
 
     .. code-block:: yaml
 
@@ -1286,7 +1292,7 @@ def latest(
             to_be_upgraded = ', '.join(sorted(targets))
             comment = 'The following packages are set to be ' \
                       'installed/upgraded: ' \
-                      '{0}.'.format(to_be_upgraded)
+                      '{0}'.format(to_be_upgraded)
             if up_to_date:
                 up_to_date_nb = len(up_to_date)
                 if up_to_date_nb <= 10:
@@ -1297,7 +1303,7 @@ def latest(
                     )
                     comment += (
                         ' The following packages are already '
-                        'up-to-date: {0}.'
+                        'up-to-date: {0}'
                     ).format(up_to_date_details)
                 else:
                     comment += ' {0} packages are already up-to-date.'.format(
@@ -1337,17 +1343,17 @@ def latest(
             comments = []
             if failed:
                 msg = 'The following packages failed to update: ' \
-                      '{0}.'.format(', '.join(sorted(failed)))
+                      '{0}'.format(', '.join(sorted(failed)))
                 comments.append(msg)
             if successful:
                 msg = 'The following packages were successfully ' \
                       'installed/upgraded: ' \
-                      '{0}.'.format(', '.join(sorted(successful)))
+                      '{0}'.format(', '.join(sorted(successful)))
                 comments.append(msg)
             if up_to_date:
                 if len(up_to_date) <= 10:
                     msg = 'The following packages were already up-to-date: ' \
-                        '{0}.'.format(', '.join(sorted(up_to_date)))
+                        '{0}'.format(', '.join(sorted(up_to_date)))
                 else:
                     msg = '{0} packages were already up-to-date. '.format(
                         len(up_to_date))
@@ -1469,7 +1475,7 @@ def _uninstall(action='remove', name=None, version=None, pkgs=None, **kwargs):
     not_installed = sorted([x for x in pkg_params if x not in targets])
     if not_installed:
         comments.append('The following packages were not installed: '
-                        '{0}.'.format(', '.join(not_installed)))
+                        '{0}'.format(', '.join(not_installed)))
         comments.append('The following packages were {0}d: '
                         '{1}.'.format(action, ', '.join(targets)))
     else:
@@ -1545,7 +1551,7 @@ def purged(name, version=None, pkgs=None, **kwargs):
                 'comment': str(exc)}
 
 
-def uptodate(name, refresh=False):
+def uptodate(name, refresh=False, **kwargs):
     '''
     .. versionadded:: 2014.7.0
 
@@ -1557,6 +1563,11 @@ def uptodate(name, refresh=False):
 
     refresh
         refresh the package database before checking for new upgrades
+
+    kwargs
+        Any keyword arguments to pass through to ``pkg.upgrade``.
+
+        .. versionadded:: 2015.2
     '''
     ret = {'name': name,
            'changes': {},
@@ -1586,7 +1597,7 @@ def uptodate(name, refresh=False):
         ret['result'] = None
         return ret
 
-    updated = __salt__['pkg.upgrade'](refresh=refresh)
+    updated = __salt__['pkg.upgrade'](refresh=refresh, **kwargs)
 
     if updated.get('result') is False:
         ret.update(updated)

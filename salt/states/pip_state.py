@@ -18,9 +18,9 @@ requisite to a pkg.installed state for the package which provides pip
         - require:
           - pkg: python-pip
 '''
-from __future__ import absolute_import
 
 # Import python libs
+from __future__ import absolute_import
 import logging
 
 # Import salt libs
@@ -29,6 +29,7 @@ from salt.version import SaltStackVersion as _SaltStackVersion
 from salt.exceptions import CommandExecutionError, CommandNotFoundError
 
 # Import 3rd-party libs
+import salt.ext.six as six
 try:
     import pip
     HAS_PIP = True
@@ -346,6 +347,10 @@ def installed(name,
         Activates the virtual environment, if given via bin_env,
         before running install.
 
+        .. deprecated:: 2014.7.2
+            If `bin_env` is given, pip will already be sourced from that
+            virualenv, making `activate` effectively a noop.
+
     pre_releases
         Include pre-releases in the available versions
 
@@ -466,8 +471,8 @@ def installed(name,
     # prepro = lambda pkg: pkg if type(pkg) == str else \
     #     ' '.join((pkg.items()[0][0], pkg.items()[0][1].replace(',', ';')))
     # pkgs = ','.join([prepro(pkg) for pkg in pkgs])
-    prepro = lambda pkg: pkg if type(pkg) == str else \
-        ' '.join((pkg.items()[0][0], pkg.items()[0][1]))
+    prepro = lambda pkg: pkg if isinstance(pkg, str) else \
+        ' '.join((six.iteritems(pkg)[0][0], six.iteritems(pkg)[0][1]))
     pkgs = [prepro(pkg) for pkg in pkgs]
 
     ret = {'name': ';'.join(pkgs), 'result': None,
@@ -796,7 +801,7 @@ def uptodate(name,
              cwd=None,
              use_vt=False):
     '''
-    .. versionadded:: Lithium
+    .. versionadded:: 2015.2.0
 
     Verify that the system is completely up to date.
 

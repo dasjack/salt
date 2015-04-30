@@ -291,10 +291,13 @@ class Shell(object):
         ret = self._run_cmd(cmd)
         return ret
 
-    def send(self, local, remote):
+    def send(self, local, remote, makedirs=False):
         '''
         scp a file or files to a remote system
         '''
+        if makedirs:
+            self.exec_cmd('mkdir -p {0}'.format(os.path.dirname(remote)))
+
         cmd = '{0} {1}:{2}'.format(local, self.host, remote)
         cmd = self._cmd_str(cmd, ssh='scp')
 
@@ -351,7 +354,7 @@ class Shell(object):
                 elif stdout and stdout.endswith('_||ext_mods||_'):
                     mods_raw = json.dumps(self.mods, separators=(',', ':')) + '|_E|0|'
                     term.sendline(mods_raw)
-                time.sleep(0.5)
+                time.sleep(0.01)
             return ret_stdout, ret_stderr, term.exitstatus
         finally:
             term.close(terminate=True, kill=True)

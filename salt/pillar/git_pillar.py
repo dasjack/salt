@@ -2,6 +2,8 @@
 '''
 Clone a remote git repository and use the filesystem as a Pillar source
 
+Currently GitPython is the only supported provider for git Pillars
+
 This external Pillar source can be configured in the master config file like
 so:
 
@@ -16,7 +18,7 @@ to look for Pillar files (such as ``top.sls``).
 .. versionchanged:: 2014.7.0
     The optional ``root`` parameter will be added.
 
-.. versionchanged:: @TBD
+.. versionchanged:: 2015.2.0
     The special branch name '__env__' will be replace by the
     environment ({{env}})
 
@@ -287,14 +289,15 @@ def ext_pillar(minion_id,
 
     # environment is "different" from the branch
     branch, _, environment = branch_env.partition(':')
+
+    gitpil = GitPillar(branch, repo_location, __opts__)
+    branch = gitpil.branch
+
     if environment == '':
         if branch == 'master':
             environment = 'base'
         else:
             environment = branch
-
-    gitpil = GitPillar(branch, repo_location, __opts__)
-    branch = gitpil.branch
 
     # normpath is needed to remove appended '/' if root is empty string.
     pillar_dir = os.path.normpath(os.path.join(gitpil.working_dir, root))

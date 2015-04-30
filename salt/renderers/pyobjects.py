@@ -266,7 +266,8 @@ import re
 from salt.ext.six import exec_
 
 import salt.utils
-from salt.loader import _create_loader
+import salt.loader
+
 from salt.fileclient import get_file_client
 from salt.utils.pyobjects import Registry, StateFactory, SaltObject, Map
 
@@ -293,23 +294,22 @@ def load_states():
     __opts__['grains'] = __grains__
     __opts__['pillar'] = __pillar__
 
-    # we need to build our own loader so that we can process the virtual names
-    # in our own way.
-    load = _create_loader(__opts__, 'states', 'states')
-    load.load_modules()
-    for mod in load.modules:
-        module_name = mod.__name__.rsplit('.', 1)[-1]
+    # TODO: honor __virtual__? The old one didn't...
+    # create our own loader that ignores __virtual__()
+    lazy_states = salt.loader.LazyLoader(
+        salt.loader._module_dirs(__opts__, 'states', 'states'),
+        __opts__,
+        tag='states',
+        pack={'__salt__': __salt__},
+        virtual_enable=False,
+    )
 
-        (virtual_ret, virtual_name, _) = load.process_virtual(mod, module_name)
-
-        # if the module returned a True value and a new name use that
-        # otherwise use the default module name
-        if virtual_ret and virtual_name != module_name:
-            module_name = virtual_name
-
-        # load our functions from the module, pass None in as the module_name
-        # so that our function names come back unprefixed
-        states[module_name] = load.load_functions(mod, None)
+    # TODO: some way to lazily do this? This requires loading *all* state modules
+    for key, func in lazy_states.iteritems():
+        mod_name, func_name = key.split('.', 1)
+        if mod_name not in states:
+            states[mod_name] = {}
+        states[mod_name][func_name] = func
 
     __context__['pyobjects_states'] = states
 
@@ -319,7 +319,6 @@ def render(template, saltenv='base', sls='', salt_data=True, **kwargs):
         load_states()
 
     # these hold the scope that our sls file will be executed with
-    _locals = {}
     _globals = {}
 
     # create our StateFactory objects
@@ -441,6 +440,6 @@ def render(template, saltenv='base', sls='', salt_data=True, **kwargs):
     Registry.enabled = True
 
     # now exec our template using our created scopes
-    exec_(final_template, _globals, _locals)
+    exec_(final_template, _globals)
 
     return Registry.salt_data()

@@ -33,6 +33,8 @@ SCHEDULE_CONF = [
         'splay',
         'range',
         'when',
+        'once',
+        'once_fmt',
         'returner',
         'jid_include',
         'args',
@@ -43,6 +45,8 @@ SCHEDULE_CONF = [
         'hours',
         'days',
         'enabled',
+        'return_job',
+        'metadata',
         'cron'
 ]
 
@@ -77,6 +81,7 @@ def list_(show_all=False, return_yaml=True):
         for item in schedule[job]:
             if item not in SCHEDULE_CONF:
                 del schedule[job][item]
+                continue
             if schedule[job][item] == 'true':
                 schedule[job][item] = True
             if schedule[job][item] == 'false':
@@ -222,6 +227,12 @@ def build_schedule_item(name, **kwargs):
         if item in kwargs:
             schedule[name][item] = kwargs[item]
 
+    if 'return_job' in kwargs:
+        schedule[name]['return_job'] = kwargs['return_job']
+
+    if 'metadata' in kwargs:
+        schedule[name]['metadata'] = kwargs['metadata']
+
     if 'job_args' in kwargs:
         schedule[name]['args'] = kwargs['job_args']
 
@@ -250,7 +261,8 @@ def build_schedule_item(name, **kwargs):
         else:
             schedule[name]['splay'] = kwargs['splay']
 
-    for item in ['range', 'when', 'cron', 'returner', 'return_config']:
+    for item in ['range', 'when', 'once', 'once_fmt', 'cron', 'returner',
+            'return_config']:
         if item in kwargs:
             schedule[name][item] = kwargs[item]
 

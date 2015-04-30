@@ -14,6 +14,7 @@ import socket
 
 # Import salt libs
 import salt.utils
+import salt.utils.decorators as decorators
 import salt.utils.network
 from salt.exceptions import CommandExecutionError
 import salt.utils.validate.net
@@ -75,7 +76,7 @@ def ping(host, timeout=False, return_boolean=False):
 
         salt '*' network.ping archlinux.org
 
-    .. versionadded:: Lithium
+    .. versionadded:: 2015.2.0
 
     Return a True or False instead of ping output.
 
@@ -301,7 +302,7 @@ def _netstat_route_linux():
     '''
     ret = []
     cmd = 'netstat -A inet -rn | tail -n+3'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -312,7 +313,7 @@ def _netstat_route_linux():
             'flags': comps[3],
             'interface': comps[7]})
     cmd = 'netstat -A inet6 -rn | tail -n+3'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         if len(comps) == 6:
@@ -342,7 +343,7 @@ def _netstat_route_freebsd():
     '''
     ret = []
     cmd = 'netstat -f inet -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -353,7 +354,7 @@ def _netstat_route_freebsd():
             'flags': comps[3],
             'interface': comps[5]})
     cmd = 'netstat -f inet6 -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -372,7 +373,7 @@ def _netstat_route_netbsd():
     '''
     ret = []
     cmd = 'netstat -f inet -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -383,7 +384,7 @@ def _netstat_route_netbsd():
             'flags': comps[3],
             'interface': comps[6]})
     cmd = 'netstat -f inet6 -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -402,7 +403,7 @@ def _netstat_route_openbsd():
     '''
     ret = []
     cmd = 'netstat -f inet -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -413,7 +414,7 @@ def _netstat_route_openbsd():
             'flags': comps[2],
             'interface': comps[7]})
     cmd = 'netstat -f inet6 -rn | tail -n+5'
-    out = __salt__['cmd.run'](cmd)
+    out = __salt__['cmd.run'](cmd, python_shell=True)
     for line in out.splitlines():
         comps = line.split()
         ret.append({
@@ -586,6 +587,7 @@ def dig(host):
     return __salt__['cmd.run'](cmd)
 
 
+@decorators.which('arp')
 def arp():
     '''
     Return the arp table from the minion

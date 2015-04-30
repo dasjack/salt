@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import ctypes
+from pprint import pformat
 import os
 import re
 import time
@@ -51,7 +52,10 @@ import salt.utils.process
 import salt.utils.zeromq
 import salt.utils.jid
 from salt.defaults import DEFAULT_TARGET_DELIM
-from salt.utils.debug import enable_sigusr1_handler, enable_sigusr2_handler, inspect_stack
+from salt.exceptions import FileserverConfigError
+from salt.utils.debug import (
+    enable_sigusr1_handler, enable_sigusr2_handler, inspect_stack
+)
 from salt.utils.event import tagify
 import binascii
 from salt.utils.master import ConnectedCache
@@ -358,6 +362,13 @@ class Master(SMaster):
                 'Failed to load fileserver backends, the configured backends '
                 'are: {0}'.format(', '.join(self.opts['fileserver_backend']))
             )
+        else:
+            # Run init() for all backends which support the function, to
+            # double-check configuration
+            try:
+                fileserver.init()
+            except FileserverConfigError as exc:
+                errors.append('{0}'.format(exc))
         if not self.opts['fileserver_backend']:
             errors.append('No fileserver backends are configured')
         if errors:
@@ -521,7 +532,23 @@ class Publisher(multiprocessing.Process):
                 try:
                     package = pull_sock.recv()
                     unpacked_package = salt.payload.unpackage(package)
-                    payload = unpacked_package['payload']
+                    try:
+                        payload = unpacked_package['payload']
+                    except (KeyError,) as exc:
+                        # somehow not packaged !?
+                        if 'enc' in payload and 'load' in payload:
+                            payload = package
+                        else:
+                            try:
+                                log.error(
+                                    "Invalid payload: {0}".format(
+                                        pformat(unpacked_package), exc_info=True))
+                            except Exception:
+                                # dont fail on a format error here !
+                                # but log something as it is hard to track down
+                                log.error("Received invalid payload", exc_info=True)
+                            raise exc
+
                     if self.opts['zmq_filtering']:
                         # if you have a specific topic list, use that
                         if 'topic_lst' in unpacked_package:
@@ -586,12 +613,6 @@ class ReqServer(object):
         if self.opts['ipv6'] is True and hasattr(zmq, 'IPV4ONLY'):
             # IPv6 sockets work for both IPv6 and IPv4 addresses
             self.clients.setsockopt(zmq.IPV4ONLY, 0)
-        try:
-            self.clients.setsockopt(zmq.HWM, self.opts['rep_hwm'])
-        # in zmq >= 3.0, there are separate send and receive HWM settings
-        except AttributeError:
-            self.clients.setsockopt(zmq.SNDHWM, self.opts['rep_hwm'])
-            self.clients.setsockopt(zmq.RCVHWM, self.opts['rep_hwm'])
 
         self.workers = self.context.socket(zmq.DEALER)
         self.w_uri = 'ipc://{0}'.format(
@@ -610,6 +631,9 @@ class ReqServer(object):
                 if exc.errno == errno.EINTR:
                     continue
                 raise exc
+            except KeyboardInterrupt:
+                log.warn('Stopping the Salt Master')
+                raise SystemExit('\nExiting on Ctrl-c')
 
     def __bind(self):
         '''
@@ -640,7 +664,11 @@ class ReqServer(object):
         '''
         Start up the ReqServer
         '''
-        self.__bind()
+        try:
+            self.__bind()
+        except KeyboardInterrupt:
+            log.warn('Stopping the Salt Master')
+            raise SystemExit('\nExiting on Ctrl-c')
 
     def destroy(self):
         if hasattr(self, 'clients') and self.clients.closed is False:
@@ -711,6 +739,13 @@ class MWorker(multiprocessing.Process):
                     raise
                 # catch all other exceptions, so we don't go defunct
                 except Exception as exc:
+                    # since we are in an exceptional state, lets attempt to tell
+                    # the minion we have a problem, otherwise the minion will get
+                    # no response and be forced to wait for their max timeout
+                    try:
+                        socket.send('Unexpected Error in Mworker')
+                    except:  # pylint: disable=W0702
+                        pass
                     # Properly handle EINTR from SIGUSR1
                     if isinstance(exc, zmq.ZMQError) and exc.errno == errno.EINTR:
                         continue
@@ -1172,11 +1207,6 @@ class AESFuncs(object):
         if not salt.utils.verify.valid_id(self.opts, load['id']):
             return False
         load['grains']['id'] = load['id']
-        mods = set()
-        for func in self.mminion.functions.values():
-            mods.add(func.__module__)
-        for mod in mods:
-            sys.modules[mod].__grains__ = load['grains']
 
         pillar_dirs = {}
         pillar = salt.pillar.Pillar(
@@ -1184,8 +1214,8 @@ class AESFuncs(object):
             load['grains'],
             load['id'],
             load.get('saltenv', load.get('env')),
-            load.get('ext'),
-            self.mminion.functions)
+            ext=load.get('ext'),
+            pillar=load.get('pillar_override', {}))
         data = pillar.compile_pillar(pillar_dirs=pillar_dirs)
         if self.opts.get('minion_data_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
@@ -1201,8 +1231,6 @@ class AESFuncs(object):
                          'pillar': data})
                     )
             os.rename(tmpfname, datap)
-        for mod in mods:
-            sys.modules[mod].__grains__ = self.opts['grains']
         return data
 
     def _minion_event(self, load):
@@ -1253,15 +1281,30 @@ class AESFuncs(object):
         if any(key not in load for key in ('return', 'jid', 'id')):
             return None
         # if we have a load, save it
-        if 'load' in load:
+        if load.get('load'):
             fstr = '{0}.save_load'.format(self.opts['master_job_cache'])
-            self.mminion.returners[fstr](load['jid'], load)
+            self.mminion.returners[fstr](load['jid'], load['load'])
+
+        # Register the syndic
+        syndic_cache_path = os.path.join(self.opts['cachedir'], 'syndics', load['id'])
+        if not os.path.exists(syndic_cache_path):
+            path_name = os.path.split(syndic_cache_path)[0]
+            if not os.path.exists(path_name):
+                os.makedirs(path_name)
+            with salt.utils.fopen(syndic_cache_path, 'w') as f:
+                f.write('')
 
         # Format individual return loads
         for key, item in load['return'].items():
             ret = {'jid': load['jid'],
                    'id': key,
                    'return': item}
+            if 'master_id' in load:
+                ret['master_id'] = load['master_id']
+            if 'fun' in load:
+                ret['fun'] = load['fun']
+            if 'arg' in load:
+                ret['fun_args'] = load['arg']
             if 'out' in load:
                 ret['out'] = load['out']
             self._return(ret)
@@ -1586,7 +1629,7 @@ class ClearFuncs(object):
 
         elif os.path.isfile(pubfn):
             # The key has been accepted, check it
-            if salt.utils.fopen(pubfn, 'r').read() != load['pub']:
+            if salt.utils.fopen(pubfn, 'r').read().strip() != load['pub'].strip():
                 log.error(
                     'Authentication attempt from {id} failed, the public '
                     'keys did not match. This may be an attempt to compromise '
@@ -1867,6 +1910,7 @@ class ClearFuncs(object):
 
         Any return other than None is an eauth failure
         '''
+
         if 'eauth' not in clear_load:
             msg = ('Authentication failure of type "eauth" occurred for '
                    'user {0}.').format(clear_load.get('username', 'UNKNOWN'))
@@ -2055,6 +2099,7 @@ class ClearFuncs(object):
         Create and return an authentication token, the clear load needs to
         contain the eauth key and the needed authentication creds.
         '''
+
         if 'eauth' not in clear_load:
             log.warning('Authentication failure of type "eauth" occurred.')
             return ''
@@ -2064,10 +2109,19 @@ class ClearFuncs(object):
             return ''
         try:
             name = self.loadauth.load_name(clear_load)
+            groups = self.loadauth.get_groups(clear_load)
             if not ((name in self.opts['external_auth'][clear_load['eauth']]) |
                     ('*' in self.opts['external_auth'][clear_load['eauth']])):
-                log.warning('Authentication failure of type "eauth" occurred.')
-                return ''
+                found = False
+                for group in groups:
+                    if "{0}%".format(group) in self.opts['external_auth'][clear_load['eauth']]:
+                        found = True
+                        break
+                if not found:
+                    log.warning('Authentication failure of type "eauth" occurred.')
+                    return ''
+                else:
+                    clear_load['groups'] = groups
             if not self.loadauth.time_auth(clear_load):
                 log.warning('Authentication failure of type "eauth" occurred.')
                 return ''
@@ -2147,12 +2201,38 @@ class ClearFuncs(object):
                 return ''
             if not ((token['name'] in self.opts['external_auth'][token['eauth']]) |
                     ('*' in self.opts['external_auth'][token['eauth']])):
-                log.warning('Authentication failure of type "token" occurred.')
-                return ''
+                found = False
+                for group in token['groups']:
+                    if "{0}%".format(group) in self.opts['external_auth'][token['eauth']]:
+                        found = True
+                        break
+                if not found:
+                    log.warning('Authentication failure of type "token" occurred.')
+                    return ''
+
+            group_perm_keys = filter(lambda(item): item.endswith('%'), self.opts['external_auth'][token['eauth']])  # The configured auth groups
+
+            # First we need to know if the user is allowed to proceed via any of their group memberships.
+            group_auth_match = False
+            for group_config in group_perm_keys:
+                group_config = group_config.rstrip('%')
+                for group in token['groups']:
+                    if group == group_config:
+                        group_auth_match = True
+
+            auth_list = []
+
+            if '*' in self.opts['external_auth'][token['eauth']]:
+                auth_list.extend(self.opts['external_auth'][token['eauth']]['*'])
+            if token['name'] in self.opts['external_auth'][token['eauth']]:
+                auth_list.extend(self.opts['external_auth'][token['eauth']][token['name']])
+            if group_auth_match:
+                auth_list = self.ckminions.fill_auth_list_from_groups(self.opts['external_auth'][token['eauth']], token['groups'], auth_list)
+
+            log.trace("compiled auth_list: {0}".format(auth_list))
+
             good = self.ckminions.auth_check(
-                self.opts['external_auth'][token['eauth']][token['name']]
-                if token['name'] in self.opts['external_auth'][token['eauth']]
-                else self.opts['external_auth'][token['eauth']]['*'],
+                auth_list,
                 clear_load['fun'],
                 clear_load['tgt'],
                 clear_load.get('tgt_type', 'glob'))
@@ -2173,27 +2253,36 @@ class ClearFuncs(object):
                 )
                 return ''
             try:
-                name = self.loadauth.load_name(extra)  # The username we are attempting to auth with
-                groups = self.loadauth.get_groups(extra)  # The groups this user belongs to
-                group_perm_keys = [item for item in self.opts['external_auth'][extra['eauth']] if item.endswith('%')]  # The configured auth groups
+                # The username with which we are attempting to auth
+                name = self.loadauth.load_name(extra)
+                # The groups to which this user belongs
+                groups = self.loadauth.get_groups(extra)
+                # The configured auth groups
+                group_perm_keys = [
+                    item for item in self.opts['external_auth'][extra['eauth']]
+                    if item.endswith('%')
+                ]
 
-                # First we need to know if the user is allowed to proceed via any of their group memberships.
+                # First we need to know if the user is allowed to proceed via
+                # any of their group memberships.
                 group_auth_match = False
                 for group_config in group_perm_keys:
                     group_config = group_config.rstrip('%')
                     for group in groups:
                         if group == group_config:
                             group_auth_match = True
-                # If a group_auth_match is set it means only that we have a user which matches at least one or more
-                # of the groups defined in the configuration file.
+                # If a group_auth_match is set it means only that we have a
+                # user which matches at least one or more of the groups defined
+                # in the configuration file.
 
                 external_auth_in_db = False
                 for d in self.opts['external_auth'][extra['eauth']]:
                     if d.startswith('^'):
                         external_auth_in_db = True
 
-                # If neither a catchall, a named membership or a group membership is found, there is no need
-                # to continue. Simply deny the user access.
+                # If neither a catchall, a named membership or a group
+                # membership is found, there is no need to continue. Simply
+                # deny the user access.
                 if not ((name in self.opts['external_auth'][extra['eauth']]) |
                         ('*' in self.opts['external_auth'][extra['eauth']]) |
                         group_auth_match | external_auth_in_db):
@@ -2206,7 +2295,8 @@ class ClearFuncs(object):
                     )
                     return ''
 
-                # Perform the actual authentication. If we fail here, do not continue.
+                # Perform the actual authentication. If we fail here, do not
+                # continue.
                 if not self.loadauth.time_auth(extra):
                     log.warning(
                         'Authentication failure of type "eauth" occurred.'
@@ -2228,7 +2318,7 @@ class ClearFuncs(object):
             if name in self.opts['external_auth'][extra['eauth']]:
                 auth_list = self.opts['external_auth'][extra['eauth']][name]
             if group_auth_match:
-                auth_list.append(self.ckminions.gather_groups(self.opts['external_auth'][extra['eauth']], groups, auth_list))
+                auth_list = self.ckminions.fill_auth_list_from_groups(self.opts['external_auth'][extra['eauth']], groups, auth_list)
 
             good = self.ckminions.auth_check(
                 auth_list,
@@ -2343,17 +2433,25 @@ class ClearFuncs(object):
                         'minions': minions
                     }
                 }
-        # Retrieve the jid
+
+        # the jid in clear_load can be None, '', or something else. this is an
+        # attempt to clean up the value before passing to plugins
+        passed_jid = clear_load['jid'] if clear_load.get('jid') else None
+        nocache = extra.get('nocache', False)
         fstr = '{0}.prep_jid'.format(self.opts['master_job_cache'])
         try:
-            clear_load['jid'] = self.mminion.returners[fstr](nocache=extra.get('nocache', False),
-                                                            # the jid in clear_load can be None, '', or something else.
-                                                            # this is an attempt to clean up the value before passing to plugins
-                                                            passed_jid=clear_load['jid'] if clear_load.get('jid') else None)
-        except TypeError:  # The returner is not present
-            log.error('The requested returner {0} could not be loaded. Publication not sent.'.format(fstr.split('.')[0]))
-            return {}
-            # TODO Error reporting over the master event bus
+            # Retrieve the jid
+            clear_load['jid'] = \
+                self.mminion.returners[fstr](nocache=nocache,
+                                             passed_jid=passed_jid)
+        except (KeyError, TypeError):
+            # The returner is not present
+            msg = (
+                'Failed to allocate a jid. The requested returner \'{0}\' '
+                'could not be loaded.'.format(fstr.split('.')[0])
+            )
+            log.error(msg)
+            return {'error': msg}
 
         self.event.fire_event({'minions': minions}, clear_load['jid'])
 
@@ -2424,7 +2522,8 @@ class ClearFuncs(object):
         # if you specified a master id, lets put that in the load
         if 'master_id' in self.opts:
             load['master_id'] = self.opts['master_id']
-        elif 'master_id' in extra:
+        # if someone passed us one, use that
+        if 'master_id' in extra:
             load['master_id'] = extra['master_id']
         # Only add the delimiter to the pub data if it is non-default
         if delimiter != DEFAULT_TARGET_DELIM:

@@ -10,6 +10,7 @@ from __future__ import absolute_import
 # Import python libs
 import fnmatch
 import os
+import copy
 
 # Import salt libs
 import salt.client
@@ -19,6 +20,7 @@ import salt.utils.jid
 import salt.minion
 
 from salt.ext.six import string_types
+from salt.exceptions import SaltClientError
 
 import logging
 log = logging.getLogger(__name__)
@@ -37,7 +39,12 @@ def active(outputter=None, display_progress=False):
     '''
     ret = {}
     client = salt.client.get_local_client(__opts__['conf_file'])
-    active_ = client.cmd('*', 'saltutil.running', timeout=__opts__['timeout'])
+    try:
+        active_ = client.cmd('*', 'saltutil.running', timeout=__opts__['timeout'])
+    except SaltClientError as client_error:
+        print(client_error)
+        return ret
+
     if display_progress:
         __jid_event__.fire_event({'message': 'Attempting to contact minions: {0}'.format(active_.keys())}, 'progress')
     for minion, data in active_.items():
@@ -61,6 +68,12 @@ def active(outputter=None, display_progress=False):
                 ret[jid]['Returned'].append(minion)
 
     if outputter:
+        salt.utils.warn_until(
+            'Boron',
+            'The \'outputter\' argument to the jobs.active runner '
+            'has been deprecated. Please specify an outputter using --out. '
+            'See the output of \'salt-run -h\' for more information.'
+        )
         return {'outputter': outputter, 'data': ret}
     else:
         return ret
@@ -84,15 +97,10 @@ def lookup_jid(jid,
         When set to `True`, adds the minions that did not return from the command.
         Default: `False`.
 
-    outputter
-        The outputter to use. Default: `None`.
-
-        .. versionadded:: Lithium
-
     display_progress
         Displays progress events when set to `True`. Default: `False`.
 
-        .. versionadded:: Lithium
+        .. versionadded:: 2015.2.0
 
     CLI Example:
 
@@ -111,6 +119,7 @@ def lookup_jid(jid,
         data = mminion.returners['{0}.get_jid'.format(returner)](jid)
     except TypeError:
         return 'Requested returner could not be loaded. No JIDs could be retrieved.'
+
     for minion in data:
         if display_progress:
             __jid_event__.fire_event({'message': minion}, 'progress')
@@ -119,11 +128,31 @@ def lookup_jid(jid,
         else:
             ret[minion] = data[minion].get('return')
     if missing:
+        load = mminion.returners['{0}.get_load'.format(returner)](jid)
         ckminions = salt.utils.minions.CkMinions(__opts__)
-        exp = ckminions.check_minions(data['tgt'], data['tgt_type'])
+        exp = ckminions.check_minions(load['tgt'], load['tgt_type'])
         for minion_id in exp:
             if minion_id not in data:
                 ret[minion_id] = 'Minion did not return'
+
+    # Once we remove the outputter argument in a couple releases, we still
+    # need to check to see if the 'out' key is present and use it to specify
+    # the correct outputter, so we get highstate output for highstate runs.
+    if outputter is None:
+        try:
+            # Check if the return data has an 'out' key. We'll use that as the
+            # outputter in the absence of one being passed on the CLI.
+            outputter = data[next(iter(data))].get('out')
+        except (StopIteration, AttributeError):
+            outputter = None
+    else:
+        salt.utils.warn_until(
+            'Boron',
+            'The \'outputter\' argument to the jobs.lookup_jid runner '
+            'has been deprecated. Please specify an outputter using --out. '
+            'See the output of \'salt-run -h\' for more information.'
+        )
+
     if outputter:
         return {'outputter': outputter, 'data': ret}
     else:
@@ -148,6 +177,12 @@ def list_job(jid, ext_source=None, outputter=None):
     ret.update(_format_jid_instance(jid, job))
     ret['Result'] = mminion.returners['{0}.get_jid'.format(returner)](jid)
     if outputter:
+        salt.utils.warn_until(
+            'Boron',
+            'The \'outputter\' argument to the jobs.list_job runner '
+            'has been deprecated. Please specify an outputter using --out. '
+            'See the output of \'salt-run -h\' for more information.'
+        )
         return {'outputter': outputter, 'data': ret}
     else:
         return ret
@@ -173,10 +208,7 @@ def list_jobs(ext_source=None,
         __jid_event__.fire_event({'message': 'Querying returner {0} for jobs.'.format(returner)}, 'progress')
     mminion = salt.minion.MasterMinion(__opts__)
 
-    try:
-        ret = mminion.returners['{0}.get_jids'.format(returner)]()
-    except TypeError:
-        return 'Error: Requested returner could not be loaded. No jobs could be retrieved.'
+    ret = mminion.returners['{0}.get_jids'.format(returner)]()
 
     if search_metadata:
         mret = {}
@@ -191,7 +223,7 @@ def list_jobs(ext_source=None,
                     log.info('The search_metadata parameter must be specified'
                              ' as a dictionary.  Ignoring.')
     else:
-        mret = ret.copy()
+        mret = copy.copy(ret)
 
     if search_target:
         _mret = {}
@@ -249,6 +281,12 @@ def print_job(jid, ext_source=None, outputter=None):
         return ret
     ret[jid]['Result'] = mminion.returners['{0}.get_jid'.format(returner)](jid)
     if outputter:
+        salt.utils.warn_until(
+            'Boron',
+            'The \'outputter\' argument to the jobs.print_job runner '
+            'has been deprecated. Please specify an outputter using --out. '
+            'See the output of \'salt-run -h\' for more information.'
+        )
         return {'outputter': outputter, 'data': ret}
     else:
         return ret

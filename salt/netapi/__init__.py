@@ -16,7 +16,7 @@ import salt.syspaths
 import salt.wheel
 import salt.utils
 import salt.client.ssh.client
-from salt.exceptions import SaltException, EauthAuthenticationError
+import salt.exceptions
 
 
 class NetapiClient(object):
@@ -31,16 +31,34 @@ class NetapiClient(object):
     def __init__(self, opts):
         self.opts = opts
 
+    def _is_master_running(self):
+        '''
+        Perform a lightweight check to see if the master daemon is running
+
+        Note, this will return an invalid success if the master crashed or was
+        not shut down cleanly.
+        '''
+        return os.path.exists(os.path.join(
+            self.opts['sock_dir'],
+            'workers.ipc'))
+
     def run(self, low):
         '''
         Execute the specified function in the specified client by passing the
         lowstate
         '''
+        # Eauth currently requires a running daemon and commands run through
+        # this method require eauth so perform a quick check to raise a
+        # more meaningful error.
+        if not self._is_master_running():
+            raise salt.exceptions.SaltDaemonNotRunning(
+                    'Salt Master is not available.')
+
         if 'client' not in low:
-            raise SaltException('No client specified')
+            raise salt.exceptions.SaltException('No client specified')
 
         if not ('token' in low or 'eauth' in low) and low['client'] != 'ssh':
-            raise EauthAuthenticationError(
+            raise salt.exceptions.EauthAuthenticationError(
                     'No authentication credentials given')
 
         l_fun = getattr(self, low['client'])
@@ -62,7 +80,13 @@ class NetapiClient(object):
         '''
         Run :ref:`execution modules <all-salt.modules>` synchronously
 
-        Wraps :py:meth:`salt.client.LocalClient.cmd`.
+        See :py:meth:`salt.client.LocalClient.cmd` for all available
+        parameters.
+
+        Sends a command from the master to the targeted minions. This is the
+        same interface that Salt's own CLI uses. Note the ``arg`` and ``kwarg``
+        parameters are sent down to the minion(s) and the given function,
+        ``fun``, is called with those parameters.
 
         :return: Returns the result from the execution module
         '''
@@ -111,6 +135,9 @@ class NetapiClient(object):
 
         Wraps :py:meth:`salt.runner.RunnerClient.cmd_sync`.
 
+        Note that runner functions must be called using keyword arguments.
+        Positional arguments are not supported.
+
         :return: Returns the result from the runner module
         '''
         kwargs['fun'] = fun
@@ -122,6 +149,9 @@ class NetapiClient(object):
         Run `runner modules <all-salt.runners>` asynchronously
 
         Wraps :py:meth:`salt.runner.RunnerClient.cmd_async`.
+
+        Note that runner functions must be called using keyword arguments.
+        Positional arguments are not supported.
 
         :return: event data and a job ID for the executed function.
         '''
@@ -135,6 +165,9 @@ class NetapiClient(object):
 
         Wraps :py:meth:`salt.wheel.WheelClient.master_call`.
 
+        Note that wheel functions must be called using keyword arguments.
+        Positional arguments are not supported.
+
         :return: Returns the result from the wheel module
         '''
         kwargs['fun'] = fun
@@ -146,6 +179,9 @@ class NetapiClient(object):
         Run :ref:`wheel modules <all-salt.wheel>` asynchronously
 
         Wraps :py:meth:`salt.wheel.WheelClient.master_call`.
+
+        Note that wheel functions must be called using keyword arguments.
+        Positional arguments are not supported.
 
         :return: Returns the result from the wheel module
         '''

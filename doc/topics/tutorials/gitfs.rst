@@ -59,13 +59,12 @@ be used to install it:
 If pygit2_ is not packaged for the platform on which the Master is running, the
 pygit2_ website has installation instructions here__. Keep in mind however that
 following these instructions will install libgit2 and pygit2_ without system
-packages. Also, while this is not explicitly mentioned in the pygit2_
-installation instructions, libssh2 development headers must be installed before
-building libgit2 in order to enable access to SSH-protected git repositories.
-Luckily, these are available in most distros' repositories, usually as either
-``libssh2-devel`` or ``libssh2-dev``, depending on platform.
+packages. Additionally, keep in mind that :ref:`SSH authentication in pygit2
+<pygit2-authentication-ssh>` requires libssh2_ (*not* libssh) development
+libraries to be present before libgit2 is built.
 
 .. __: http://www.pygit2.org/install.html
+.. _libssh2: http://www.libssh2.org/
 
 GitPython
 ---------
@@ -122,6 +121,30 @@ For APT-based distros such as Ubuntu and Debian:
 
     # apt-get install python-dulwich
 
+.. important::
+
+    If switching to Dulwich from GitPython/pygit2, or switching from
+    GitPython/pygit2 to Dulwich, it is necessary to clear the gitfs cache to
+    avoid unpredictable behavior. This is probably a good idea whenever
+    switching to a new :conf_master:`gitfs_provider`, but it is less important
+    when switching between GitPython and pygit2.
+
+    Beginning in version 2015.2.0, the gitfs cache can be easily cleared using
+    the :mod:`fileserver.clear_cache <salt.runners.fileserver.clear_cache>`
+    runner.
+
+    .. code-block:: bash
+
+        salt-run fileserver.clear_cache backend=git
+
+    If the Master is running an earlier version, then the cache can be cleared
+    by removing the ``gitfs`` and ``file_lists/gitfs`` directories (both paths
+    relative to the master cache directory, usually
+    ``/var/cache/salt/master``).
+
+    .. code-block:: bash
+
+        rm -rf /var/cache/salt/master{,/file_lists}/gitfs
 
 Simple Configuration
 ====================
@@ -156,6 +179,14 @@ master:
 
    Information on how to authenticate to SSH remotes can be found :ref:`here
    <gitfs-authentication>`.
+
+   .. note::
+
+       Dulwich does not recognize ``ssh://`` URLs, ``git+ssh://`` must be used
+       instead. Salt version 2015.2.0 and later will automatically add the
+       ``git+`` to the beginning of these URLs before fetching, but earlier
+       Salt versions will fail to fetch unless the URL is specified using
+       ``git+ssh://``.
 
 3. Restart the master to load the new configuration.
 
@@ -510,6 +541,8 @@ an ``insecure_auth`` parameter:
         - user: git
         - password: mypassword
         - insecure_auth: True
+
+.. _pygit2-authentication-ssh:
 
 SSH
 ~~~

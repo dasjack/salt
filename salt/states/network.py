@@ -53,11 +53,13 @@ all interfaces are ignored unless specified.
 
     eth2:
       network.managed:
+        - enabled: True
         - type: slave
         - master: bond0
 
     eth3:
       network.managed:
+        - enabled: True
         - type: slave
         - master: bond0
 
@@ -73,18 +75,17 @@ all interfaces are ignored unless specified.
         - type: bond
         - ipaddr: 10.1.0.1
         - netmask: 255.255.255.0
+        - mode: active-backup
+        - proto: static
         - dns:
           - 8.8.8.8
           - 8.8.4.4
         - ipv6:
         - enabled: False
-        - use_in:
-          - network: eth2
-          - network: eth3
+        - slaves: eth2 eth3
         - require:
           - network: eth2
           - network: eth3
-        - mode: 802.3ad
         - miimon: 100
         - arp_interval: 250
         - downdelay: 200
@@ -169,7 +170,7 @@ all interfaces are ignored unless specified.
     .. note::
         Apply changes to hostname immediately.
 
-    .. versionadded:: Lithium
+    .. versionadded:: 2015.2.0
 
 .. note::
 
@@ -182,7 +183,7 @@ from __future__ import absolute_import
 import difflib
 import salt.utils
 import salt.utils.network
-from salt.loader import _create_loader
+import salt.loader
 
 # Set up logging
 import logging
@@ -244,8 +245,7 @@ def managed(name, type, enabled=True, **kwargs):
                 diff = difflib.unified_diff(old, new, lineterm='')
                 ret['result'] = None
                 ret['comment'] = 'Interface {0} is set to be ' \
-                                 'updated.'.format(name)
-                ret['changes']['interface'] = '\n'.join(diff)
+                                 'updated:\n{1}'.format(name, '\n'.join(diff))
         else:
             if not old and new:
                 ret['comment'] = 'Interface {0} ' \
@@ -277,8 +277,7 @@ def managed(name, type, enabled=True, **kwargs):
                     diff = difflib.unified_diff(old, new, lineterm='')
                     ret['result'] = None
                     ret['comment'] = 'Bond interface {0} is set to be ' \
-                                     'updated.'.format(name)
-                    ret['changes']['bond'] = '\n'.join(diff)
+                                     'updated:\n{1}'.format(name, '\n'.join(diff))
             else:
                 if not old and new:
                     ret['comment'] = 'Bond interface {0} ' \
@@ -331,8 +330,8 @@ def managed(name, type, enabled=True, **kwargs):
         ret['comment'] = str(error)
         return ret
 
-    load = _create_loader(__opts__, 'grains', 'grain', ext_dirs=False)
-    grains_info = load.gen_grains()
+    # TODO: create saltutil.refresh_grains that fires events to the minion daemon
+    grains_info = salt.loader.grains(__opts__, True)
     __grains__.update(grains_info)
     __salt__['saltutil.refresh_modules']()
     return ret
@@ -372,8 +371,8 @@ def routes(name, **kwargs):
             elif old != new:
                 diff = difflib.unified_diff(old, new, lineterm='')
                 ret['result'] = None
-                ret['comment'] = 'Interface {0} routes are set to be updated.'.format(name)
-                ret['changes']['network_routes'] = '\n'.join(diff)
+                ret['comment'] = 'Interface {0} routes are set to be ' \
+                                 'updated:\n{1}'.format(name, '\n'.join(diff))
                 return ret
         if not old and new:
             apply_routes = True
@@ -434,8 +433,8 @@ def system(name, **kwargs):
             elif old != new:
                 diff = difflib.unified_diff(old, new, lineterm='')
                 ret['result'] = None
-                ret['comment'] = 'Global network settings are set to be updated.'
-                ret['changes']['network_settings'] = '\n'.join(diff)
+                ret['comment'] = 'Global network settings are set to be ' \
+                                 'updated:\n{0}'.format('\n'.join(diff))
                 return ret
         if not old and new:
             apply_net_settings = True

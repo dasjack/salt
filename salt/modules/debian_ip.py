@@ -423,7 +423,7 @@ IPV4_ATTR_MAP = {
     'server':  __ipv4_quad,
     'hwaddr':  __mac,
     # tunnel
-    'mode':  __within(['gre', 'GRE', 'ipip', 'IPIP'], dtype=str),
+    'mode':  __within(['gre', 'GRE', 'ipip', 'IPIP', '802.3ad'], dtype=str),
     'endpoint':  __ipv4_quad,
     'dstaddr':  __ipv4_quad,
     'local':  __ipv4_quad,
@@ -577,11 +577,10 @@ def _parse_interfaces(interface_files=None):
 
                     attr, valuestr = line.rstrip().split(None, 1)
                     if _attrmaps_contain_attr(attr):
-                        _attr = DEBIAN_ATTR_TO_SALT_ATTR_MAP.get(attr, attr)
-                        if '-' in _attr:
-                            attrname = _attr.replace('-', '_')
+                        if '-' in attr:
+                            attrname = attr.replace('-', '_')
                         else:
-                            attrname = _attr
+                            attrname = attr
                         (valid, value, errmsg) = _validate_interface_option(
                             attr, valuestr, addrfam)
                         iface_dict[attrname] = value
@@ -626,6 +625,11 @@ def _parse_interfaces(interface_files=None):
     # Return a sorted list of the keys for bond, bridge and ethtool options to
     # ensure a consistent order
     for iface_name in adapters:
+        if 'data' not in adapters[iface_name]:
+            msg = 'Interface file malformed for interface: {0}.'.format(iface_name)
+            log.error(msg)
+            adapters.pop(iface_name)
+            continue
         for opt in ['ethtool', 'bonding', 'bridging']:
             if 'inet' in adapters[iface_name]['data']:
                 if opt in adapters[iface_name]['data']['inet']:
@@ -1168,6 +1172,9 @@ def _parse_settings_eth(opts, iface_type, enabled, iface):
     if enabled:
         adapters[iface]['enabled'] = True
 
+    if opts.get('hotplug', False):
+        adapters[iface]['hotplug'] = True
+
     iface_data['inet']['addrfam'] = 'inet'
 
     if iface_type not in ['bridge']:
@@ -1184,12 +1191,14 @@ def _parse_settings_eth(opts, iface_type, enabled, iface):
     if iface_type == 'bridge':
         bridging = _parse_bridge_opts(opts, iface)
         if bridging:
+            opts.pop('mode', None)
             iface_data['inet']['bridging'] = bridging
             iface_data['inet']['bridging_keys'] = sorted(bridging)
 
     elif iface_type == 'bond':
         bonding = _parse_settings_bond(opts, iface)
         if bonding:
+            opts.pop('mode', None)
             iface_data['inet']['bonding'] = bonding
             iface_data['inet']['bonding']['slaves'] = opts['slaves']
             iface_data['inet']['bonding_keys'] = sorted(bonding)
@@ -1405,9 +1414,9 @@ def _write_file_ifaces(iface, data):
     for adapter in adapters:
         if 'type' in adapters[adapter] and adapters[adapter]['type'] == 'slave':
             # Override values so the interfaces file is correct
-            adapters[adapter]['enabled'] = False
             adapters[adapter]['data']['inet']['addrfam'] = 'inet'
             adapters[adapter]['data']['inet']['proto'] = 'manual'
+            adapters[adapter]['data']['inet']['master'] = adapters[adapter]['master']
 
         tmp = template.render({'name': adapter, 'data': adapters[adapter]})
         ifcfg = tmp + ifcfg

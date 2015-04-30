@@ -252,13 +252,20 @@ def host_keys(keydir=None):
     for fn_ in os.listdir(keydir):
         if fn_.startswith('ssh_host_'):
             top = fn_.split('.')
-            comps = fn_.split('_')
+            comps = top[0].split('_')
             kname = comps[2]
             if len(top) > 1:
                 kname += '.{0}'.format(top[1])
             try:
                 with salt.utils.fopen(os.path.join(keydir, fn_), 'r') as _fh:
-                    keys[kname] = _fh.readline().strip()
+                    # As of RFC 4716 "a key file is a text file, containing a sequence of lines",
+                    # although some SSH implementations (e.g. OpenSSH) manage their own format(s).
+                    # Please see #20708 for a discussion about how to handle SSH key files in the future
+                    keys[kname] = _fh.readline()
+                    # only read the whole file if it is not in the legacy 1.1 binary format
+                    if keys[kname] != "SSH PRIVATE KEY FILE FORMAT 1.1\n":
+                        keys[kname] += _fh.read()
+                    keys[kname] = keys[kname].strip()
             except (IOError, OSError):
                 keys[kname] = ''
     return keys
@@ -647,7 +654,8 @@ def get_known_host(user, hostname, config=None):
         return full
 
     cmd = 'ssh-keygen -F "{0}" -f "{1}"'.format(hostname, full)
-    lines = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
+    lines = __salt__['cmd.run'](cmd, ignore_retcode=True,
+                                python_shell=False).splitlines()
     known_hosts = list(_parse_openssh_output(lines))
     return known_hosts[0] if known_hosts else None
 
@@ -875,7 +883,12 @@ def user_keys(user=None, pubfile=None, prvfile=None):
         salt '*' ssh.user_keys
         salt '*' ssh.user_keys user=user1
         salt '*' ssh.user_keys user=user1 pubfile=/home/user1/.ssh/id_rsa.pub prvfile=/home/user1/.ssh/id_rsa
+        salt '*' ssh.user_keys user=user1 prvfile=False
         salt '*' ssh.user_keys user="['user1','user2'] pubfile=id_rsa.pub prvfile=id_rsa
+
+    As you can see you can tell Salt not to read from the user's private (or public) key file by setting the
+    file path to ``False``. This can be useful to prevent Salt from publishing private data via Salt Mine or
+    others.
     '''
     if not user:
         user = __salt__['user.list_users']()
@@ -897,13 +910,13 @@ def user_keys(user=None, pubfile=None, prvfile=None):
 
         if pubfile:
             userKeys.append(pubfile)
-        else:
+        elif pubfile is not False:
             # Add the default public keys
             userKeys += ['id_rsa.pub', 'id_dsa.pub', 'id_ecdsa.pub', 'id_ed25519.pub']
 
         if prvfile:
             userKeys.append(prvfile)
-        else:
+        elif prvfile is not False:
             # Add the default private keys
             userKeys += ['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']
 

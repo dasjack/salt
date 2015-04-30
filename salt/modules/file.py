@@ -474,8 +474,15 @@ def chgrp(path, group):
 
 def get_sum(path, form='sha256'):
     '''
-    Return the sum for the given file, default is md5, sha1, sha224, sha256,
-    sha384, sha512 are supported
+    Return the checksum for the given file. The following checksum algorithms
+    are supported:
+
+    * md5
+    * sha1
+    * sha224
+    * sha256 **(default)**
+    * sha384
+    * sha512
 
     path
         path to the file or directory
@@ -1055,6 +1062,60 @@ def _get_flags(flags):
     return flags
 
 
+def _mkstemp_copy(path,
+                  preserve_inode=True):
+    '''
+    Create a temp file and move/copy the contents of ``path`` to the temp file.
+    Return the path to the temp file.
+
+    path
+        The full path to the file whose contents will be moved/copied to a temp file.
+        Whether it's moved or copied depends on the value of ``preserve_inode``.
+    preserve_inode
+        Preserve the inode of the file, so that any hard links continue to share the
+        inode with the original filename. This works by *copying* the file, reading
+        from the copy, and writing to the file at the original inode. If ``False``, the
+        file will be *moved* rather than copied, and a new file will be written to a
+        new inode, but using the original filename. Hard links will then share an inode
+        with the backup, instead (if using ``backup`` to create a backup copy).
+        Default is ``True``.
+    '''
+    temp_file = None
+    # Create the temp file
+    try:
+        temp_file = salt.utils.mkstemp()
+    except (OSError, IOError) as exc:
+        raise CommandExecutionError(
+            "Unable to create temp file. "
+            "Exception: {0}".format(exc)
+            )
+    # use `copy` to preserve the inode of the
+    # original file, and thus preserve hardlinks
+    # to the inode. otherwise, use `move` to
+    # preserve prior behavior, which results in
+    # writing the file to a new inode.
+    if preserve_inode:
+        try:
+            shutil.copy2(path, temp_file)
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError(
+                "Unable to copy file '{0}' to the "
+                "temp file '{1}'. "
+                "Exception: {2}".format(path, temp_file, exc)
+                )
+    else:
+        try:
+            shutil.move(path, temp_file)
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError(
+                "Unable to move file '{0}' to the "
+                "temp file '{1}'. "
+                "Exception: {2}".format(path, temp_file, exc)
+                )
+
+    return temp_file
+
+
 def replace(path,
             pattern,
             repl,
@@ -1152,7 +1213,13 @@ def replace(path,
         salt '*' file.replace /etc/httpd/httpd.conf pattern='LogLevel warn' repl='LogLevel info'
         salt '*' file.replace /some/file pattern='before' repl='after' flags='[MULTILINE, IGNORECASE]'
     '''
-    path = os.path.expanduser(path)
+    symlink = False
+    if is_link(path):
+        symlink = True
+        target_path = os.readlink(path)
+        given_path = os.path.expanduser(path)
+
+    path = os.path.realpath(os.path.expanduser(path))
 
     if not os.path.exists(path):
         raise SaltInvocationError('File not found: {0}'.format(path))
@@ -1170,7 +1237,7 @@ def replace(path,
         raise SaltInvocationError('Choose between append or prepend_if_not_found')
 
     flags_num = _get_flags(flags)
-    cpattern = re.compile(pattern, flags_num)
+    cpattern = re.compile(str(pattern), flags_num)
     if bufsize == 'file':
         bufsize = os.path.getsize(path)
 
@@ -1187,68 +1254,97 @@ def replace(path,
     repl = str(repl)
 
     found = False
+    temp_file = None
+    content = str(not_found_content) if not_found_content and \
+                                       (prepend_if_not_found or
+                                        append_if_not_found) \
+                                     else repl
 
-    # First check the whole file, whether the replacement has already been made
+    # First check the whole file, determine whether to make the replacement
+    # Searching first avoids modifying the time stamp if there are no changes
     try:
-        # open the file read-only and inplace=False, otherwise the result
-        # will be an empty file after iterating over it just for searching
-        fi_file = fileinput.input(path,
-                        inplace=False,
-                        backup=False,
-                        bufsize=bufsize,
-                        mode='r')
+        # Use a read-only handle to open the file
+        with salt.utils.fopen(path,
+                              mode='rb',
+                              buffering=bufsize) as r_file:
+            for line in r_file:
+                if search_only:
+                    # Just search; bail as early as a match is found
+                    if re.search(cpattern, line):
+                        return True  # `with` block handles file closure
+                else:
+                    result, nrepl = re.subn(cpattern, repl, line, count)
 
-        for line in fi_file:
+                    # found anything? (even if no change)
+                    if nrepl > 0:
+                        found = True
 
-            line = line.strip()
+                    if prepend_if_not_found or append_if_not_found:
+                        # Search for content, so we don't continue pre/appending
+                        # the content if it's been pre/appended in a previous run.
+                        if re.search(content, line):
+                            # Content was found, so set found.
+                            found = True
 
-            if (prepend_if_not_found or append_if_not_found) and not_found_content:
-                if line == not_found_content:
-                    if search_only:
-                        return True
-                    found = True
-                    break
+                    # Identity check each potential change until one change is made
+                    if has_changes is False and result != line:
+                        has_changes = True
 
-            else:
-                if line == repl:
-                    if search_only:
-                        return True
-                    found = True
-                    break
+                    # Keep track of show_changes here, in case the file isn't
+                    # modified
+                    if show_changes or append_if_not_found or \
+                       prepend_if_not_found:
+                        orig_file.append(line)
+                        new_file.append(result)
 
-    finally:
-        fi_file.close()
+    except (OSError, IOError) as exc:
+        raise CommandExecutionError(
+            "Unable to open file '{0}'. "
+            "Exception: {1}".format(path, exc)
+            )
 
-    try:
-        fi_file = fileinput.input(path,
-                        inplace=not (dry_run or search_only),
-                        backup=False if (dry_run or search_only or found) else backup,
-                        bufsize=bufsize,
-                        mode='r' if (dry_run or search_only or found) else 'rb')
+    # Just search. We've searched the whole file now; if we didn't return True
+    # already, then the pattern isn't present, so return False.
+    if search_only:
+        return False
 
-        if not found:
-            for line in fi_file:
-                result, nrepl = re.subn(cpattern, repl, line, count)
+    if has_changes and not dry_run:
+        # Write the replacement text in this block.
+        try:
+            # Create a copy to read from and to use as a backup later
+            temp_file = _mkstemp_copy(path=path, preserve_inode=False)
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError("Exception: {0}".format(exc))
 
-                # found anything? (even if no change)
-                if nrepl > 0:
-                    found = True
-
-                # Identity check each potential change until one change is made
-                if has_changes is False and result != line:
-                    has_changes = True
-
-                if show_changes:
-                    orig_file.append(line)
-                    new_file.append(result)
-
-                if not dry_run:
-                    print(result, end='', file=sys.stdout)
-    finally:
-        fi_file.close()
+        try:
+            # Open the file in write mode
+            with salt.utils.fopen(path,
+                        mode='wb',
+                        buffering=bufsize) as w_file:
+                try:
+                    # Open the temp file in read mode
+                    with salt.utils.fopen(temp_file,
+                                          mode='rb',
+                                          buffering=bufsize) as r_file:
+                        for line in r_file:
+                            result, nrepl = re.subn(cpattern, repl,
+                                                    line, count)
+                            try:
+                                w_file.write(result)
+                            except (OSError, IOError) as exc:
+                                raise CommandExecutionError(
+                                    "Unable to write file '{0}'. Contents may "
+                                    "be truncated. Temporary file contains copy "
+                                    "at '{1}'. "
+                                    "Exception: {2}".format(path, temp_file, exc)
+                                    )
+                except (OSError, IOError) as exc:
+                    raise CommandExecutionError("Exception: {0}".format(exc))
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError("Exception: {0}".format(exc))
 
     if not found and (append_if_not_found or prepend_if_not_found):
-        if None == not_found_content:
+        if not_found_content is None:
             not_found_content = repl
         if prepend_if_not_found:
             new_file.insert(0, not_found_content + '\n')
@@ -1261,7 +1357,11 @@ def replace(path,
             new_file.append(not_found_content + '\n')
         has_changes = True
         if not dry_run:
-            # backup already done in filter part
+            try:
+                # Create a copy to read from and for later use as a backup
+                temp_file = _mkstemp_copy(path=path, preserve_inode=False)
+            except (OSError, IOError) as exc:
+                raise CommandExecutionError("Exception: {0}".format(exc))
             # write new content in the file while avoiding partial reads
             try:
                 f = salt.utils.atomicfile.atomic_open(path, 'wb')
@@ -1269,6 +1369,44 @@ def replace(path,
                     f.write(line)
             finally:
                 f.close()
+
+    if backup and has_changes and not dry_run:
+        # keep the backup only if it was requested
+        # and only if there were any changes
+        backup_name = '{0}{1}'.format(path, backup)
+        try:
+            shutil.move(temp_file, backup_name)
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError(
+                "Unable to move the temp file '{0}' to the "
+                "backup file '{1}'. "
+                "Exception: {2}".format(path, temp_file, exc)
+                )
+        if symlink:
+            symlink_backup = '{0}{1}'.format(given_path, backup)
+            target_backup = '{0}{1}'.format(target_path, backup)
+            # Always clobber any existing symlink backup
+            # to match the behaviour of the 'backup' option
+            try:
+                os.symlink(target_backup, symlink_backup)
+            except OSError:
+                os.remove(symlink_backup)
+                os.symlink(target_backup, symlink_backup)
+            except:
+                raise CommandExecutionError(
+                    "Unable create backup symlink '{0}'. "
+                    "Target was '{1}'. "
+                    "Exception: {2}".format(symlink_backup, target_backup,
+                                            exc)
+                    )
+    elif temp_file:
+        try:
+            os.remove(temp_file)
+        except (OSError, IOError) as exc:
+            raise CommandExecutionError(
+                "Unable to delete temp file '{0}'. "
+                "Exception: {1}".format(temp_file, exc)
+                )
 
     if not dry_run and not salt.utils.is_windows():
         check_perms(path, None, pre_user, pre_group, pre_mode)
@@ -1546,8 +1684,13 @@ def patch(originalfile, patchfile, options='', dry_run=False):
             dry_run_opt = ' --dry-run'
     else:
         dry_run_opt = ''
-    cmd = 'patch {0}{1} "{2}" "{3}"'.format(
-        options, dry_run_opt, originalfile, patchfile)
+
+    patchpath = salt.utils.which('patch')
+    if not patchpath:
+        raise CommandExecutionError('patch executable not found. Is the distribution\'s patch package installed?')
+
+    cmd = '{0} {1}{2} "{3}" "{4}"'.format(
+        patchpath, options, dry_run_opt, originalfile, patchfile)
     return __salt__['cmd.run_all'](cmd, python_shell=False)
 
 
@@ -2622,7 +2765,9 @@ def get_managed(
     source_sum = {}
     if template and source:
         sfn = __salt__['cp.cache_file'](source, saltenv)
-        if not os.path.exists(sfn):
+        # exists doesn't play nice with sfn as bool
+        # but if cache failed, sfn == False
+        if not sfn or not os.path.exists(sfn):
             return sfn, {}, 'Source file {0} not found'.format(source)
         if sfn == name:
             raise SaltInvocationError(
@@ -2819,9 +2964,13 @@ def check_perms(name, ret, user, group, mode, follow_symlinks=False):
                         ret['changes']['mode'] = mode
     # user/group changes if needed, then check if it worked
     if user:
+        if isinstance(user, int):
+            user = uid_to_user(user)
         if user != perms['luser']:
             perms['cuser'] = user
     if group:
+        if isinstance(group, int):
+            group = gid_to_group(group)
         if group != perms['lgroup']:
             perms['cgroup'] = group
     if 'cuser' in perms or 'cgroup' in perms:
@@ -3263,10 +3412,10 @@ def manage_file(name,
                                     real_name,
                                     __salt__['config.backup_mode'](backup),
                                     __opts__['cachedir'])
-            except IOError:
+            except IOError as io_error:
                 __clean_tmp(sfn)
                 return _error(
-                    ret, 'Failed to commit change, permission error')
+                    ret, 'Failed to commit change: {0}'.format(io_error))
 
         if contents is not None:
             # Write the static contents to a temporary file
@@ -3301,10 +3450,10 @@ def manage_file(name,
                                         real_name,
                                         __salt__['config.backup_mode'](backup),
                                         __opts__['cachedir'])
-                except IOError:
+                except IOError as io_error:
                     __clean_tmp(tmp)
                     return _error(
-                        ret, 'Failed to commit change, permission error')
+                        ret, 'Failed to commit change: {0}'.format(io_error))
             __clean_tmp(tmp)
 
         # check for changing symlink to regular file here
@@ -3332,10 +3481,10 @@ def manage_file(name,
                                     name,
                                     __salt__['config.backup_mode'](backup),
                                     __opts__['cachedir'])
-            except IOError:
+            except IOError as io_error:
                 __clean_tmp(sfn)
                 return _error(
-                    ret, 'Failed to commit change, permission error')
+                    ret, 'Failed to commit change: {0}'.format(io_error))
 
             ret['changes']['diff'] = \
                 'Replace symbolic link with regular file'
@@ -3346,12 +3495,34 @@ def manage_file(name,
             ret['comment'] = 'File {0} updated'.format(name)
 
         elif not ret['changes'] and ret['result']:
-            ret['comment'] = 'File {0} is in the correct state'.format(name)
+            ret['comment'] = u'File {0} is in the correct state'.format(name)
         if sfn:
             __clean_tmp(sfn)
         return ret
-    else:
-        # Only set the diff if the file contents is managed
+    else:  # target file does not exist
+        contain_dir = os.path.dirname(name)
+
+        def _set_mode_and_make_dirs(name, dir_mode, mode, user, group):
+            # check for existence of windows drive letter
+            if salt.utils.is_windows():
+                drive, _ = os.path.splitdrive(name)
+                if drive and not os.path.exists(drive):
+                    __clean_tmp(sfn)
+                    return _error(ret,
+                                  '{0} drive not present'.format(drive))
+            if dir_mode is None and mode is not None:
+                # Add execute bit to each nonzero digit in the mode, if
+                # dir_mode was not specified. Otherwise, any
+                # directories created with makedirs_() below can't be
+                # listed via a shell.
+                mode_list = [x for x in str(mode)][-3:]
+                for idx in range(len(mode_list)):
+                    if mode_list[idx] != '0':
+                        mode_list[idx] = str(int(mode_list[idx]) | 1)
+                dir_mode = ''.join(mode_list)
+            makedirs_(name, user=user,
+                      group=group, mode=dir_mode)
+
         if source:
             # It is a new file, set the diff accordingly
             ret['changes']['diff'] = 'New file'
@@ -3373,43 +3544,18 @@ def manage_file(name,
                                                dl_sum)
                     ret['result'] = False
                     return ret
-            if not os.path.isdir(os.path.dirname(name)):
+            if not os.path.isdir(contain_dir):
                 if makedirs:
-                    # check for existence of windows drive letter
-                    if salt.utils.is_windows():
-                        drive, _ = os.path.splitdrive(name)
-                        if drive and not os.path.exists(drive):
-                            __clean_tmp(sfn)
-                            return _error(ret,
-                                         '{0} drive not present'.format(drive))
-                    if dir_mode is None and mode is not None:
-                        # Add execute bit to each nonzero digit in the mode, if
-                        # dir_mode was not specified. Otherwise, any
-                        # directories created with makedirs_() below can't be
-                        # listed via a shell.
-                        mode_list = [x for x in str(mode)][-3:]
-                        for idx in range(len(mode_list)):
-                            if mode_list[idx] != '0':
-                                mode_list[idx] = str(int(mode_list[idx]) | 1)
-                        dir_mode = ''.join(mode_list)
-                    makedirs_(name, user=user, group=group, mode=dir_mode)
+                    _set_mode_and_make_dirs(name, dir_mode, mode, user, group)
                 else:
                     __clean_tmp(sfn)
                     # No changes actually made
                     ret['changes'].pop('diff', None)
                     return _error(ret, 'Parent directory not present')
-        else:
-            if not os.path.isdir(os.path.dirname(name)):
+        else:  # source != True
+            if not os.path.isdir(contain_dir):
                 if makedirs:
-                    # check for existence of windows drive letter
-                    if salt.utils.is_windows():
-                        drive, _ = os.path.splitdrive(name)
-                        if drive and not os.path.exists(drive):
-                            __clean_tmp(sfn)
-                            return _error(ret,
-                                         '{0} drive not present'.format(drive))
-                    makedirs_(name, user=user, group=group,
-                              mode=dir_mode or mode)
+                    _set_mode_and_make_dirs(name, dir_mode, mode, user, group)
                 else:
                     __clean_tmp(sfn)
                     # No changes actually made
@@ -3537,12 +3683,16 @@ def makedirs_(path,
 
     if os.path.isdir(dirname):
         # There's nothing for us to do
-        return 'Directory {0!r} already exists'.format(dirname)
+        msg = 'Directory {0!r} already exists'.format(dirname)
+        log.debug(msg)
+        return msg
 
     if os.path.exists(dirname):
-        return 'The path {0!r} already exists and is not a directory'.format(
+        msg = 'The path {0!r} already exists and is not a directory'.format(
             dirname
         )
+        log.debug(msg)
+        return msg
 
     directories_to_create = []
     while True:
@@ -3556,6 +3706,7 @@ def makedirs_(path,
     directories_to_create.reverse()
     for directory_to_create in directories_to_create:
         # all directories have the user, group and mode set!!
+        log.debug('Creating directory: %s', directory_to_create)
         mkdir(directory_to_create, user=user, group=group, mode=mode)
 
 
@@ -4271,6 +4422,69 @@ def pardir():
         salt '*' file.pardir
     '''
     return os.path.pardir
+
+
+def normpath(path):
+    '''
+    Returns Normalize path, eliminating double slashes, etc.
+
+    .. versionadded:: 2015.2
+
+    This can be useful at the CLI but is frequently useful when scripting.
+
+    .. code-block:: yaml
+
+        {%- from salt['file.normpath'](tpldir + '/../vars.jinja') import parent_vars %}
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' file.normpath 'a/b/c/..'
+    '''
+    return os.path.normpath(path)
+
+
+def basename(path):
+    '''
+    Returns the final component of a pathname
+
+    .. versionadded:: 2015.2
+
+    This can be useful at the CLI but is frequently useful when scripting.
+
+    .. code-block:: yaml
+
+        {%- set filename = salt['file.basename'](source_file) %}
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' file.basename 'test/test.config'
+    '''
+    return os.path.basename(path)
+
+
+def dirname(path):
+    '''
+    Returns the directory component of a pathname
+
+    .. versionadded:: 2015.2
+
+    This can be useful at the CLI but is frequently useful when scripting.
+
+    .. code-block:: yaml
+
+        {%- from salt['file.dirname'](tpldir) + '/vars.jinja' import parent_vars %}
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' file.dirname 'test/path/filename.config'
+    '''
+    return os.path.dirname(path)
 
 
 def join(*args):

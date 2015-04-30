@@ -118,7 +118,7 @@ def get_load(jid):
     Return the load data that marks a specified jid
     '''
     client, path = _get_conn(__opts__)
-    return json.loads(client.get('/'.join(path, 'jobs', jid, '.load.p')))
+    return json.loads(client.get('/'.join((path, 'jobs', jid, '.load.p'))))
 
 
 def get_jid(jid):
@@ -170,7 +170,7 @@ def get_minions():
     return ret
 
 
-def prep_jid(nocache, passed_jid=None):  # pylint: disable=unused-argument
+def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''

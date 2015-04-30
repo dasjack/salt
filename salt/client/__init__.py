@@ -22,9 +22,11 @@ The data structure needs to be:
 from __future__ import print_function
 from __future__ import absolute_import
 import os
+import sys
 import time
 import logging
 import errno
+import re
 from datetime import datetime
 from salt.ext.six import string_types
 
@@ -33,14 +35,17 @@ import salt.config
 import salt.payload
 import salt.transport
 import salt.loader
+import salt.minion
 import salt.utils
 import salt.utils.args
 import salt.utils.event
 import salt.utils.minions
 import salt.utils.verify
+import salt.utils.jid
 import salt.syspaths as syspaths
 from salt.exceptions import (
-    EauthAuthenticationError, SaltInvocationError, SaltReqTimeoutError
+    EauthAuthenticationError, SaltInvocationError, SaltReqTimeoutError,
+    SaltClientError, PublishError
 )
 import salt.ext.six as six
 
@@ -129,8 +134,8 @@ class LocalClient(object):
                 self.opts['transport'],
                 opts=self.opts,
                 listen=not self.opts.get('__worker', False))
-
-        self.returners = salt.loader.returners(self.opts, {})
+        self.functions = salt.loader.minion_mods(self.opts)
+        self.returners = salt.loader.returners(self.opts, self.functions)
 
     def __read_master_key(self):
         '''
@@ -206,7 +211,7 @@ class LocalClient(object):
         if not pub_data:
             # Failed to autnenticate, this could be a bunch of things
             raise EauthAuthenticationError(
-                'Failed to authenticate!  This is most likely because this '
+                'Failed to authenticate! This is most likely because this '
                 'user is not permitted to execute commands, but there is a '
                 'small possibility that a disk error occurred (check '
                 'disk/inode usage).'
@@ -261,15 +266,24 @@ class LocalClient(object):
         # Subscribe to all events and subscribe as early as possible
         self.event.subscribe(jid)
 
-        pub_data = self.pub(
-            tgt,
-            fun,
-            arg,
-            expr_form,
-            ret,
-            jid=jid,
-            timeout=self._get_timeout(timeout),
-            **kwargs)
+        try:
+            pub_data = self.pub(
+                tgt,
+                fun,
+                arg,
+                expr_form,
+                ret,
+                jid=jid,
+                timeout=self._get_timeout(timeout),
+                **kwargs)
+        except SaltClientError:
+            # Re-raise error with specific message
+            raise SaltClientError(
+                'The salt master could not be contacted. Is master running?'
+            )
+        except Exception as general_exception:
+            # Convert to generic client error and pass along mesasge
+            raise SaltClientError(general_exception)
 
         return self._check_pub_data(pub_data)
 
@@ -482,6 +496,7 @@ class LocalClient(object):
             * ``grain`` - Match based on a grain comparison
             * ``grain_pcre`` - Grain comparison with a regex
             * ``pillar`` - Pillar data comparison
+            * ``pillar_pcre`` - Pillar data comparison with a regex
             * ``nodegroup`` - Match on nodegroup
             * ``range`` - Use a Range server for matching
             * ``compound`` - Pass a compound match string
@@ -780,23 +795,39 @@ class LocalClient(object):
             self,
             jid,
             event=None,
-            gather_errors=False):
+            gather_errors=False,
+            tags_regex=None
+           ):
         '''
         Raw function to just return events of jid excluding timeout logic
 
         Yield either the raw event data or None
+
+       Pass a list of additional regular expressions as `tags_regex` to search
+       the event bus for non-return data, such as minion lists returned from
+       syndics.
         '''
         if event is None:
             event = self.event
+
         jid_tag = 'salt/job/{0}'.format(jid)
+        jid_tag_regex = '^salt/job/{0}'.format(jid)
+
+        tag_search = []
+        tag_search.append(re.compile(jid_tag_regex))
+        if isinstance(tags_regex, str):
+            tag_search.append(re.compile(tags_regex))
+        elif isinstance(tags_regex, list):
+            for tag in tags_regex:
+                tag_search.append(re.compile(tag))
         while True:
             if self.opts.get('transport') == 'zeromq':
                 try:
                     raw = event.get_event_noblock()
                     if gather_errors:
                         if (raw and
-                               (raw.get('tag', '').startswith('_salt_error') or
-                                raw.get('tag', '').startswith(jid_tag))):
+                                (raw.get('tag', '').startswith('_salt_error') or
+                                any([tag.search(raw.get('tag', '')) for tag in tag_search]))):
                             yield raw
                     else:
                         if raw and raw.get('tag', '').startswith(jid_tag):
@@ -851,16 +882,21 @@ class LocalClient(object):
                 yield {}
                 # stop the iteration, since the jid is invalid
                 raise StopIteration()
-        except salt.exceptions.SaltMasterError as exc:
+        except Exception as exc:
             log.warning('Returner unavailable: {exc}'.format(exc=exc))
         # Wait for the hosts to check in
         syndic_wait = 0
         last_time = False
         # iterator for this job's return
-        ret_iter = self.get_returns_no_block(jid, gather_errors=gather_errors)
+        if self.opts['order_masters']:
+            # If we are a MoM, we need to gather expected minions from downstreams masters.
+            ret_iter = self.get_returns_no_block(jid, gather_errors=gather_errors, tags_regex='^syndic/.*/{0}'.format(jid))
+        else:
+            ret_iter = self.get_returns_no_block(jid, gather_errors=gather_errors)
         # iterator for the info of this job
         jinfo_iter = []
         timeout_at = time.time() + timeout
+        gather_syndic_wait = time.time() + self.opts['syndic_wait']
         # are there still minions running the job out there
         # start as True so that we ping at least once
         minions_running = True
@@ -881,9 +917,6 @@ class LocalClient(object):
                         yield ret
                 if 'minions' in raw.get('data', {}):
                     minions.update(raw['data']['minions'])
-                    continue
-                if 'syndic' in raw:
-                    minions.update(raw['syndic'])
                     continue
                 if 'return' not in raw['data']:
                     continue
@@ -907,8 +940,19 @@ class LocalClient(object):
                 # All minions have returned, break out of the loop
                 log.debug('jid {0} found all minions {1}'.format(jid, found))
                 break
+            elif len(found.intersection(minions)) >= len(minions) and self.opts['order_masters']:
+                if len(found) >= len(minions) and len(minions) > 0 and time.time() > gather_syndic_wait:
+                    # There were some minions to find and we found them
+                    # However, this does not imply that *all* masters have yet responded with expected minion lists.
+                    # Therefore, continue to wait up to the syndic_wait period (calculated in gather_syndic_wait) to see
+                    # if additional lower-level masters deliver their lists of expected
+                    # minions.
+                    break
+            # If we get here we may not have gathered the minion list yet. Keep waiting
+            # for all lower-level masters to respond with their minion lists
 
             # let start the timeouts for all remaining minions
+
             for id_ in minions - found:
                 # if we have a new minion in the list, make sure it has a timeout
                 if id_ not in minion_timeouts:
@@ -1012,9 +1056,13 @@ class LocalClient(object):
         found = set()
         ret = {}
         # Check to see if the jid is real, if not return the empty dict
-        if self.returners['{0}.get_load'.format(self.opts['master_job_cache'])](jid) == {}:
-            log.warning('jid does not exist')
-            return ret
+        try:
+            if self.returners['{0}.get_load'.format(self.opts['master_job_cache'])](jid) == {}:
+                log.warning('jid does not exist')
+                return ret
+        except Exception as exc:
+            raise SaltClientError('Master job cache returner [{0}] failed to verify jid. '
+                                  'Exception details: {1}'.format(self.opts['master_job_cache'], exc))
 
         # Wait for the hosts to check in
         while True:
@@ -1056,7 +1104,13 @@ class LocalClient(object):
         # create the iterator-- since we want to get anyone in the middle
         event_iter = self.get_event_iter_returns(jid, minions, timeout=timeout)
 
-        data = self.returners['{0}.get_jid'.format(self.opts['master_job_cache'])](jid)
+        try:
+            data = self.returners['{0}.get_jid'.format(self.opts['master_job_cache'])](jid)
+        except Exception as exc:
+            raise SaltClientError('Returner {0} could not fetch jid data. '
+                                  'Exception details: {1}'.format(
+                                      self.opts['master_job_cache'],
+                                      exc))
         for minion in data:
             m_data = {}
             if u'return' in data[minion]:
@@ -1099,7 +1153,13 @@ class LocalClient(object):
         '''
         ret = {}
 
-        data = self.returners['{0}.get_jid'.format(self.opts['master_job_cache'])](jid)
+        try:
+            data = self.returners['{0}.get_jid'.format(self.opts['master_job_cache'])](jid)
+        except Exception as exc:
+            raise SaltClientError('Could not examine master job cache. '
+                                  'Error occured in {0} returner. '
+                                  'Exception details: {1}'.format(self.opts['master_job_cache'],
+                                                                  exc))
         for minion in data:
             m_data = {}
             if u'return' in data[minion]:
@@ -1145,9 +1205,15 @@ class LocalClient(object):
         found = set()
         ret = {}
         # Check to see if the jid is real, if not return the empty dict
-        if self.returners['{0}.get_load'.format(self.opts['master_job_cache'])](jid) == {}:
-            log.warning('jid does not exist')
-            return ret
+        try:
+            if self.returners['{0}.get_load'.format(self.opts['master_job_cache'])](jid) == {}:
+                log.warning('jid does not exist')
+                return ret
+        except Exception as exc:
+            raise SaltClientError('Load could not be retreived from '
+                                  'returner {0}. Exception details: {1}'.format(
+                                      self.opts['master_job_cache'],
+                                      exc))
         # Wait for the hosts to check in
         while True:
             # Process events until timeout is reached or all minions have returned
@@ -1235,14 +1301,12 @@ class LocalClient(object):
                         connected_minions = salt.utils.minions.CkMinions(self.opts).connected_ids()
                     if connected_minions and id_ not in connected_minions:
                         yield {id_: {'out': 'no_return',
-                                        'ret': 'Minion did not return. [Not connected]'}}
+                                     'ret': 'Minion did not return. [Not connected]'}}
                     else:
-                        yield({
-                            id_: {
-                                'out': 'no_return',
-                                'ret': 'Minion did not return. [No response]'
-                            }
-                        })
+                        # don't report syndics as unresponsive minions
+                        if not os.path.exists(os.path.join(self.opts['syndic_dir'], id_)):
+                            yield {id_: {'out': 'no_return',
+                                         'ret': 'Minion did not return. [No response]'}}
                 else:
                     yield {id_: min_ret}
 
@@ -1340,7 +1404,7 @@ class LocalClient(object):
             payload_kwargs['kwargs'] = kwargs
 
         # If we have a salt user, add it to the payload
-        if self.opts['order_masters'] and 'user' in kwargs:
+        if self.opts['syndic_master'] and 'user' in kwargs:
             payload_kwargs['user'] = kwargs['user']
         elif self.salt_user:
             payload_kwargs['user'] = self.salt_user
@@ -1385,11 +1449,10 @@ class LocalClient(object):
         if not os.path.exists(os.path.join(self.opts['sock_dir'],
                                            'publish_pull.ipc')):
             log.error(
-                'Unable to connect to the publisher! '
-                'You do not have permissions to access '
+                'Unable to connect to the salt master publisher at '
                 '{0}'.format(self.opts['sock_dir'])
             )
-            return {'jid': '0', 'minions': []}
+            raise SaltClientError
 
         payload_kwargs = self._prep_pub(
                 tgt,
@@ -1410,11 +1473,11 @@ class LocalClient(object):
         try:
             payload = channel.send(payload_kwargs, timeout=timeout)
         except SaltReqTimeoutError:
-            log.error(
-                'Salt request timed out. If this error persists, '
+            raise SaltReqTimeoutError(
+                'Salt request timed out. The master is not responding. '
+                'If this error persists after verifying the master is up, '
                 'worker_threads may need to be increased.'
             )
-            return {}
 
         if not payload:
             # The master key could have changed out from under us! Regen
@@ -1425,8 +1488,13 @@ class LocalClient(object):
             self.key = key
             payload_kwargs['key'] = self.key
             payload = channel.send(payload_kwargs)
-            if not payload:
-                return payload
+
+        error = payload.pop('error', None)
+        if error is not None:
+            raise PublishError(error)
+
+        if not payload:
+            return payload
 
         # We have the payload, let's get rid of the channel fast(GC'ed faster)
         del channel

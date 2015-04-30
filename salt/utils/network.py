@@ -6,7 +6,6 @@ from __future__ import absolute_import
 
 # Import python libs
 import socket
-import subprocess
 import shlex
 import re
 import logging
@@ -24,6 +23,7 @@ except ImportError:
 
 # Import salt libs
 import salt.utils
+from salt._compat import subprocess
 
 
 log = logging.getLogger(__name__)
@@ -721,25 +721,56 @@ def _ipv4_to_bits(ipaddr):
     return ''.join([bin(int(x))[2:].rjust(8, '0') for x in ipaddr.split('.')])
 
 
+def _get_iface_info(iface):
+    '''
+    If `iface` is available, return interface info and no error, otherwise
+    return no info and log and return an error
+    '''
+    iface_info = interfaces()
+
+    if iface in iface_info.keys():
+        return iface_info, False
+    else:
+        error_msg = ('Interface "{0}" not in available interfaces: "{1}"'
+                     ''.format(iface, '", "'.join(iface_info.keys())))
+        log.error(error_msg)
+        return None, error_msg
+
+
 def hw_addr(iface):
     '''
     Return the hardware address (a.k.a. MAC address) for a given interface
     '''
-    return interfaces().get(iface, {}).get('hwaddr', '')
+    iface_info, error = _get_iface_info(iface)
+
+    if error is False:
+        return iface_info.get(iface, {}).get('hwaddr', '')
+    else:
+        return error
 
 
 def interface(iface):
     '''
-    Return the interface details
+    Return the details of `iface` or an error if it does not exist
     '''
-    return interfaces().get(iface, {}).get('inet', '')
+    iface_info, error = _get_iface_info(iface)
+
+    if error is False:
+        return iface_info.get(iface, {}).get('inet', '')
+    else:
+        return error
 
 
 def interface_ip(iface):
     '''
-    Return the interface details
+    Return `iface` IPv4 addr or an error if `iface` does not exist
     '''
-    return interfaces().get(iface, {}).get('inet', {})[0].get('address', {})
+    iface_info, error = _get_iface_info(iface)
+
+    if error is False:
+        return iface_info.get(iface, {}).get('inet', {})[0].get('address', '')
+    else:
+        return error
 
 
 def subnets():
@@ -803,14 +834,16 @@ def ip_in_subnet(ip_addr, cidr):
     return (ipaddr & mask) == (netaddr & mask)
 
 
-def ip_addrs(interface=None, include_loopback=False):
+def ip_addrs(interface=None, include_loopback=False, interface_data=None):
     '''
     Returns a list of IPv4 addresses assigned to the host. 127.0.0.1 is
     ignored, unless 'include_loopback=True' is indicated. If 'interface' is
     provided, then only IP addresses from that interface will be returned.
     '''
     ret = set()
-    ifaces = interfaces()
+    ifaces = interface_data \
+        if isinstance(interface_data, dict) \
+        else interfaces()
     if interface is None:
         target_ifaces = ifaces
     else:
@@ -831,14 +864,16 @@ def ip_addrs(interface=None, include_loopback=False):
     return sorted(list(ret))
 
 
-def ip_addrs6(interface=None, include_loopback=False):
+def ip_addrs6(interface=None, include_loopback=False, interface_data=None):
     '''
     Returns a list of IPv6 addresses assigned to the host. ::1 is ignored,
     unless 'include_loopback=True' is indicated. If 'interface' is provided,
     then only IP addresses from that interface will be returned.
     '''
     ret = set()
-    ifaces = interfaces()
+    ifaces = interface_data \
+        if isinstance(interface_data, dict) \
+        else interfaces()
     if interface is None:
         target_ifaces = ifaces
     else:
@@ -967,7 +1002,7 @@ def _sunos_remotes_on(port, which_end):
     '''
     remotes = set()
     try:
-        data = subprocess.check_output(['netstat', '-f', 'inet', '-n'])
+        data = subprocess.check_output(['netstat', '-f', 'inet', '-n'])  # pylint: disable=minimum-python-version
     except subprocess.CalledProcessError:
         log.error('Failed netstat')
         raise
@@ -1013,7 +1048,7 @@ def _freebsd_remotes_on(port, which_end):
 
     try:
         cmd = shlex.split('sockstat -4 -c -p {0}'.format(port))
-        data = subprocess.check_output(cmd)
+        data = subprocess.check_output(cmd)  # pylint: disable=minimum-python-version
     except subprocess.CalledProcessError as ex:
         log.error('Failed "sockstat" with returncode = {0}'.format(ex.returncode))
         raise
@@ -1069,7 +1104,7 @@ def remotes_on_local_tcp_port(port):
         return _freebsd_remotes_on(port, 'local_port')
 
     try:
-        data = subprocess.check_output(['lsof', '-i4TCP:{0:d}'.format(port), '-n'])
+        data = subprocess.check_output(['lsof', '-i4TCP:{0:d}'.format(port), '-n'])  # pylint: disable=minimum-python-version
     except subprocess.CalledProcessError as ex:
         log.error('Failed "lsof" with returncode = {0}'.format(ex.returncode))
         raise
@@ -1120,7 +1155,7 @@ def remotes_on_remote_tcp_port(port):
         return _freebsd_remotes_on(port, 'remote_port')
 
     try:
-        data = subprocess.check_output(['lsof', '-i4TCP:{0:d}'.format(port), '-n'])
+        data = subprocess.check_output(['lsof', '-i4TCP:{0:d}'.format(port), '-n'])  # pylint: disable=minimum-python-version
     except subprocess.CalledProcessError as ex:
         log.error('Failed "lsof" with returncode = {0}'.format(ex.returncode))
         raise

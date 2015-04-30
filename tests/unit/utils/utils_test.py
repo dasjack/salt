@@ -135,10 +135,12 @@ class UtilsTestCase(TestCase):
 
     @skipIf(os.path.exists('/tmp/no_way_this_is_a_file_nope.sh'), 'Test file exists! Skipping safe_rm_exceptions test!')
     def test_safe_rm_exceptions(self):
+        error = False
         try:
             utils.safe_rm('/tmp/no_way_this_is_a_file_nope.sh')
         except (IOError, OSError):
-            self.assertTrue(False, "utils.safe_rm raised exception when it should not have")
+            error = True
+        self.assertFalse(error, 'utils.safe_rm raised exception when it should not have')
 
     @skipIf(NO_MOCK, NO_MOCK_REASON)
     @patch('salt.utils.arg_lookup')
@@ -152,6 +154,10 @@ class UtilsTestCase(TestCase):
 
         # Make sure we raise an error if we don't pass in the requisite number of arguments
         self.assertRaises(SaltInvocationError, utils.format_call, dummy_func, {'1': 2})
+
+        # Make sure we warn on invalid kwargs
+        ret = utils.format_call(dummy_func, {'first': 2, 'second': 2, 'third': 3})
+        self.assertGreaterEqual(len(ret['warnings']), 1)
 
         ret = utils.format_call(dummy_func, {'first': 2, 'second': 2, 'third': 3},
                                 expected_extra_kws=('first', 'second', 'third'))

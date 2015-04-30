@@ -105,7 +105,7 @@ class ZeroMQCaller(object):
             ret['jid']
         )
         if fun not in self.minion.functions:
-            sys.stderr.write('Function {0} is not available.'.format(fun))
+            sys.stderr.write(self.minion.functions.missing_fun_string(fun))
             mod_name = fun.split('.')[0]
             if mod_name in self.minion.function_errors:
                 sys.stderr.write(' Possible reasons: {0}\n'.format(self.minion.function_errors[mod_name]))
@@ -178,6 +178,8 @@ class ZeroMQCaller(object):
             ret['fun_args'] = self.opts['arg']
 
         for returner in returners:
+            if not returner:  # if we got an empty returner somehow, skip
+                continue
             try:
                 ret['success'] = True
                 self.minion.returners['{0}.returner'.format(returner)](ret)
@@ -352,7 +354,7 @@ class RAETCaller(ZeroMQCaller):
                           lanename=lanename,
                           sockdirpath=sockdirpath)
 
-        stack.Pk = raeting.packKinds.pack
+        stack.Pk = raeting.PackKind.pack.value
         stack.addRemote(RemoteYard(stack=stack,
                                    name='manor',
                                    lanename=lanename,

@@ -99,7 +99,7 @@ Available Functions
 
       /finish-install.sh:
         docker.run:
-          - container: mysuperdocker
+          - cid: mysuperdocker
           - unless: grep -q something /var/log/foo
           - docker_unless: grep -q done /install_log
 
@@ -254,9 +254,6 @@ def pulled(name,
     insecure_registry
         Set to ``True`` to allow connections to non-HTTPS registries. Default ``False``.
     '''
-
-    if tag:
-        name = '{0}:{1}'.format(name, tag)
 
     inspect_image = __salt__['docker.inspect_image']
     image_infos = inspect_image('{0}:{1}'.format(name, tag))

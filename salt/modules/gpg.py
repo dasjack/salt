@@ -3,6 +3,8 @@
 Manage a GPG keychains, add keys, create keys, retrieve keys
 from keyservers.  Sign, encrypt and sign & encrypt text and files.
 
+.. versionadded:: 2015.2.0
+
 .. note::
 
     The ``python-gnupg`` library and gpg binary are
@@ -156,7 +158,7 @@ def search_keys(text, keyserver=None, user=None):
 
     user
         Which user's keychain to access, defaults to user Salt is running as.  Passing
-        the user as 'salt' will set the GPG home directory to /etc/salt/gpg.
+        the user as 'salt' will set the GPG home directory to /etc/salt/gpgkeys.
 
     CLI Example:
 
@@ -200,7 +202,7 @@ def list_keys(user=None):
 
     user
         Which user's keychain to access, defaults to user Salt is running as.  Passing
-        the user as 'salt' will set the GPG home directory to /etc/salt/gpg.
+        the user as 'salt' will set the GPG home directory to /etc/salt/gpgkeys.
 
     CLI Example:
 
@@ -242,7 +244,7 @@ def list_secret_keys(user=None):
 
     user
         Which user's keychain to access, defaults to user Salt is running as.  Passing
-        the user as 'salt' will set the GPG home directory to /etc/salt/gpg.
+        the user as 'salt' will set the GPG home directory to /etc/salt/gpgkeys.
 
     CLI Example:
 
@@ -332,7 +334,7 @@ def create_key(key_type='RSA',
 
     user
         Which user's keychain to access, defaults to user Salt is running as.  Passing
-        the user as 'salt' will set the GPG home directory to /etc/salt/gpg.
+        the user as 'salt' will set the GPG home directory to /etc/salt/gpgkeys.
 
     CLI Example:
 
@@ -407,7 +409,7 @@ def delete_key(keyid=None,
 
     user
         Which user's keychain to access, defaults to user Salt is running as.  Passing
-        the user as 'salt' will set the GPG home directory to /etc/salt/gpg.
+        the user as 'salt' will set the GPG home directory to /etc/salt/gpgkeys.
 
     CLI Example:
 
@@ -788,7 +790,12 @@ def trust_key(keyid=None,
     cmd = 'echo {0}:{1} | {2} --import-ownertrust'.format(fingerprint,
                                                           NUM_TRUST_DICT[trust_level],
                                                           _check_gpg())
-    res = __salt__['cmd.run_all'](cmd, runas=user)
+    _user = user
+    if user == 'salt':
+        homeDir = os.path.join(salt.syspaths.CONFIG_DIR, 'gpgkeys')
+        cmd = '{0} --homedir {1}'.format(cmd, homeDir)
+        _user = 'root'
+    res = __salt__['cmd.run_all'](cmd, runas=_user)
 
     if not res['retcode'] == 0:
         ret['res'] = False

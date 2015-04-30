@@ -12,8 +12,10 @@ import time
 # Import salt libs
 import salt.crypt
 import salt.payload
+import salt.utils
 import salt.utils.network
 import salt.utils.event
+from salt.exceptions import SaltClientError
 
 MINE_INTERNAL_KEYWORDS = frozenset([
     '__pub_user',
@@ -35,7 +37,11 @@ def _auth():
     Return the auth object
     '''
     if 'auth' not in __context__:
-        __context__['auth'] = salt.crypt.SAuth(__opts__)
+        try:
+            __context__['auth'] = salt.crypt.SAuth(__opts__)
+        except SaltClientError:
+            log.error('Could not authenticate with master.'
+                      'Mine data will not be transmitted.')
     return __context__['auth']
 
 
@@ -49,8 +55,12 @@ def _mine_function_available(func):
 
 def _mine_send(load, opts):
     if opts.get('transport', '') == 'zeromq':
-        load['tok'] = _auth().gen_token('salt')
-
+        try:
+            load['tok'] = _auth().gen_token('salt')
+        except AttributeError:
+            log.error('Mine could not authenticate with master. '
+                      'Mine data not sent.')
+            return False
     eventer = salt.utils.event.MinionEvent(opts)
     event_ret = eventer.fire_event(load, '_minion_mine')
     # We need to pause here to allow for the decoupled nature of
@@ -61,7 +71,13 @@ def _mine_send(load, opts):
 
 def _mine_get(load, opts):
     if opts.get('transport', '') == 'zeromq':
-        load['tok'] = _auth().gen_token('salt')
+        try:
+            load['tok'] = _auth().gen_token('salt')
+        except AttributeError:
+            log.error('Mine could not authenticate with master. '
+                      'Mine could not be retreived.'
+                      )
+            return False
     channel = salt.transport.Channel.factory(opts)
     ret = channel.send(load)
     return ret
@@ -142,6 +158,7 @@ def send(func, *args, **kwargs):
         salt '*' mine.send network.ip_addrs eth0
         salt '*' mine.send eth0_ip_addrs mine_function=network.ip_addrs eth0
     '''
+    kwargs = salt.utils.clean_kwargs(**kwargs)
     mine_func = kwargs.pop('mine_function', func)
     if mine_func not in __salt__:
         return False
@@ -196,6 +213,7 @@ def get(tgt, fun, expr_form='glob'):
         grain_pcre
         compound
         pillar
+        pillar_pcre
 
     Note that all pillar matches, whether using the compound matching system or
     the pillar matching system, will be exact matches, with globbing disabled.
@@ -218,6 +236,7 @@ def get(tgt, fun, expr_form='glob'):
                      'ipcidr': __salt__['match.ipcidr'],
                      'compound': __salt__['match.compound'],
                      'pillar': __salt__['match.pillar'],
+                     'pillar_pcre': __salt__['match.pillar_pcre'],
                      }[expr_form](tgt)
         if is_target:
             data = __salt__['data.getval']('mine_cache')

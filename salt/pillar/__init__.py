@@ -5,10 +5,10 @@ Render the pillar data
 from __future__ import absolute_import
 
 # Import python libs
+import copy
 import os
 import collections
 import logging
-from copy import copy
 
 # Import salt libs
 import salt.loader
@@ -18,8 +18,7 @@ import salt.crypt
 import salt.transport
 from salt.ext.six import string_types
 from salt.template import compile_template
-from salt.utils.dictupdate import update
-from salt.utils.serializers.yamlex import merge_recursive
+from salt.utils.dictupdate import merge
 from salt.utils.odict import OrderedDict
 from salt.version import __version__
 import salt.ext.six as six
@@ -28,24 +27,8 @@ import salt.ext.six as six
 log = logging.getLogger(__name__)
 
 
-def merge_recurse(obj_a, obj_b):
-    copied = copy(obj_a)
-    return update(copied, obj_b)
-
-
-def merge_aggregate(obj_a, obj_b):
-    return merge_recursive(obj_a, obj_b, level=1)
-
-
-def merge_overwrite(obj_a, obj_b):
-    for obj in obj_b:
-        if obj in obj_a:
-            obj_a[obj] = obj_b[obj]
-            return obj_a
-    return merge_recurse(obj_a, obj_b)
-
-
-def get_pillar(opts, grains, id_, saltenv=None, ext=None, env=None, funcs=None):
+def get_pillar(opts, grains, id_, saltenv=None, ext=None, env=None, funcs=None,
+               pillar=None):
     '''
     Return the correct pillar driver based on the file_client option
     '''
@@ -57,24 +40,32 @@ def get_pillar(opts, grains, id_, saltenv=None, ext=None, env=None, funcs=None):
         )
         # Backwards compatibility
         saltenv = env
-
-    return {
-            'remote': RemotePillar,
-            'local': Pillar
-            }.get(opts['file_client'], Pillar)(opts, grains, id_, saltenv, ext, functions=funcs)
+    ptype = {
+        'remote': RemotePillar,
+        'local': Pillar
+    }.get(opts['file_client'], Pillar)
+    return ptype(opts, grains, id_, saltenv, ext, functions=funcs,
+                 pillar=pillar)
 
 
 class RemotePillar(object):
     '''
     Get the pillar from the master
     '''
-    def __init__(self, opts, grains, id_, saltenv, ext=None, functions=None):
+    def __init__(self, opts, grains, id_, saltenv, ext=None, functions=None,
+                 pillar=None):
         self.opts = opts
         self.opts['environment'] = saltenv
         self.ext = ext
         self.grains = grains
         self.id_ = id_
         self.channel = salt.transport.Channel.factory(opts)
+        self.pillar_override = {}
+        if pillar is not None:
+            if isinstance(pillar, dict):
+                self.pillar_override = pillar
+            else:
+                log.error('Pillar data must be a dictionary')
 
     def compile_pillar(self):
         '''
@@ -83,6 +74,7 @@ class RemotePillar(object):
         load = {'id': self.id_,
                 'grains': self.grains,
                 'saltenv': self.opts['environment'],
+                'pillar_override': self.pillar_override,
                 'ver': '2',
                 'cmd': '_pillar'}
         if self.ext:
@@ -104,7 +96,8 @@ class Pillar(object):
     '''
     Read over the pillar top files and render the pillar data
     '''
-    def __init__(self, opts, grains, id_, saltenv, ext=None, functions=None):
+    def __init__(self, opts, grains, id_, saltenv, ext=None, functions=None,
+                 pillar=None):
         # Store the file_roots path so we can restore later. Issue 5449
         self.actual_file_roots = opts['file_roots']
         # use the local file client
@@ -134,6 +127,12 @@ class Pillar(object):
             self.merge_strategy = opts['pillar_source_merging_strategy']
 
         self.ext_pillars = salt.loader.pillars(ext_pillar_opts, self.functions)
+        self.pillar_override = {}
+        if pillar is not None:
+            if isinstance(pillar, dict):
+                self.pillar_override = pillar
+            else:
+                log.error('Pillar data must be a dictionary')
 
     def __valid_ext(self, ext):
         '''
@@ -388,7 +387,10 @@ class Pillar(object):
                 sls, exc
             )
             log.critical(msg)
-            errors.append('Rendering SLS \'{0}\' failed. Please see master log for details.'.format(sls))
+            if self.opts.get('pillar_safe_render_error', True):
+                errors.append('Rendering SLS \'{0}\' failed. Please see master log for details.'.format(sls))
+            else:
+                errors.append(msg)
         mods.add(sls)
         nstate = None
         if state:
@@ -424,7 +426,11 @@ class Pillar(object):
                                         key: nstate
                                     }
 
-                                state = self.merge_sources(state, nstate)
+                                state = merge(
+                                    state,
+                                    nstate,
+                                    self.merge_strategy,
+                                    self.opts.get('renderer', 'yaml'))
 
                             if err:
                                 errors += err
@@ -435,7 +441,7 @@ class Pillar(object):
         Extract the sls pillar files from the matches and render them into the
         pillar
         '''
-        pillar = {}
+        pillar = copy.copy(self.pillar_override)
         errors = []
         for saltenv, pstates in matches.items():
             mods = set()
@@ -457,7 +463,11 @@ class Pillar(object):
                             )
                         )
                         continue
-                    pillar = self.merge_sources(pillar, pstate)
+                    pillar = merge(
+                        pillar,
+                        pstate,
+                        self.merge_strategy,
+                        self.opts.get('renderer', 'yaml'))
 
         return pillar, errors
 
@@ -501,6 +511,8 @@ class Pillar(object):
             log.critical('The "ext_pillar" option is malformed')
             return pillar
         ext = None
+        # Bring in CLI pillar data
+        pillar.update(self.pillar_override)
         for run in self.opts['ext_pillar']:
             if not isinstance(run, dict):
                 log.critical('The "ext_pillar" option is malformed')
@@ -537,45 +549,28 @@ class Pillar(object):
                                 )
                             )
             if ext:
-                pillar = self.merge_sources(pillar, ext)
+                pillar = merge(
+                    pillar,
+                    ext,
+                    self.merge_strategy,
+                    self.opts.get('renderer', 'yaml'))
                 ext = None
         return pillar
-
-    def merge_sources(self, obj_a, obj_b):
-        strategy = self.merge_strategy
-
-        if strategy == 'smart':
-            renderer = self.opts.get('renderer', 'yaml')
-            if renderer == 'yamlex' or renderer.startswith('yamlex_'):
-                strategy = 'aggregate'
-            else:
-                strategy = 'recurse'
-
-        if strategy == 'recurse':
-            merged = merge_recurse(obj_a, obj_b)
-        elif strategy == 'aggregate':
-            #: level = 1 merge at least root data
-            merged = merge_aggregate(obj_a, obj_b)
-        elif strategy == 'overwrite':
-            merged = merge_overwrite(obj_a, obj_b)
-        else:
-            log.warning('unknown merging strategy {0}, '
-                        'fallback to recurse'.format(strategy))
-            merged = merge_recurse(obj_a, obj_b)
-
-        return merged
 
     def compile_pillar(self, ext=True, pillar_dirs=None):
         '''
         Render the pillar data and return
         '''
-        top, terrors = self.get_top()
+        top, top_errors = self.get_top()
         if ext:
             if self.opts.get('ext_pillar_first', False):
                 self.opts['pillar'] = self.ext_pillar({}, pillar_dirs)
                 matches = self.top_matches(top)
                 pillar, errors = self.render_pillar(matches)
-                pillar = self.merge_sources(pillar, self.opts['pillar'])
+                pillar = merge(pillar,
+                               self.opts['pillar'],
+                               self.merge_strategy,
+                               self.opts.get('renderer', 'yaml'))
             else:
                 matches = self.top_matches(top)
                 pillar, errors = self.render_pillar(matches)
@@ -583,7 +578,7 @@ class Pillar(object):
         else:
             matches = self.top_matches(top)
             pillar, errors = self.render_pillar(matches)
-        errors.extend(terrors)
+        errors.extend(top_errors)
         if self.opts.get('pillar_opts', True):
             mopts = dict(self.opts)
             if 'grains' in mopts:

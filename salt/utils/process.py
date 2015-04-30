@@ -11,12 +11,12 @@ import multiprocessing
 import signal
 
 import threading
-import Queue
 
 # Import salt libs
 import salt.defaults.exitcodes
 import salt.utils
 import salt.ext.six as six
+from salt.ext.six.moves import queue, range  # pylint: disable=import-error,redefined-builtin
 
 log = logging.getLogger(__name__)
 
@@ -27,11 +27,21 @@ try:
 except ImportError:
     pass
 
-try:
-    import systemd.daemon
-    HAS_PYTHON_SYSTEMD = True
-except ImportError:
-    HAS_PYTHON_SYSTEMD = False
+
+def notify_systemd():
+    '''
+    Notify systemd that this process has started
+    '''
+    try:
+        import systemd.daemon
+    except ImportError:
+        return False
+    if systemd.daemon.booted():
+        try:
+            return systemd.daemon.notify('READY=1')
+        except SystemError:
+            # Daemon was not started by systemd
+            pass
 
 
 def set_pidfile(pidfile, user):
@@ -148,12 +158,12 @@ class ThreadPool(object):
         self.num_threads = num_threads
 
         # create a task queue of queue_size
-        self._job_queue = Queue.Queue(queue_size)
+        self._job_queue = queue.Queue(queue_size)
 
         self._workers = []
 
         # create worker threads
-        for idx in xrange(num_threads):
+        for _ in range(num_threads):
             thread = threading.Thread(target=self._thread_target)
             thread.daemon = True
             thread.start()
@@ -170,7 +180,7 @@ class ThreadPool(object):
         try:
             self._job_queue.put_nowait((func, args, kwargs))
             return True
-        except Queue.Full:
+        except queue.Full:
             return False
 
     def _thread_target(self):
@@ -179,7 +189,7 @@ class ThreadPool(object):
             try:
                 func, args, kwargs = self._job_queue.get(timeout=1)
                 self._job_queue.task_done()  # Mark the task as done once we get it
-            except Queue.Empty:
+            except queue.Empty:
                 continue
             try:
                 log.debug('ThreadPool executing func: {0} with args:{1}'
@@ -219,17 +229,17 @@ class ProcessManager(object):
         if kwargs is None:
             kwargs = {}
 
-        if type(multiprocessing.Process) == type(tgt) and issubclass(tgt, multiprocessing.Process):
-            p = tgt(*args, **kwargs)
+        if type(multiprocessing.Process) is type(tgt) and issubclass(tgt, multiprocessing.Process):
+            process = tgt(*args, **kwargs)
         else:
-            p = multiprocessing.Process(target=tgt, args=args, kwargs=kwargs)
+            process = multiprocessing.Process(target=tgt, args=args, kwargs=kwargs)
 
-        p.start()
-        log.debug("Started '{0}' with pid {1}".format(tgt.__name__, p.pid))
-        self._process_map[p.pid] = {'tgt': tgt,
-                                    'args': args,
-                                    'kwargs': kwargs,
-                                    'Process': p}
+        process.start()
+        log.debug("Started '{0}' with pid {1}".format(tgt.__name__, process.pid))
+        self._process_map[process.pid] = {'tgt': tgt,
+                                          'args': args,
+                                          'kwargs': kwargs,
+                                          'Process': process}
 
     def restart_process(self, pid):
         '''
@@ -256,13 +266,6 @@ class ProcessManager(object):
 
         # make sure to kill the subprocesses if the parent is killed
         signal.signal(signal.SIGTERM, self.kill_children)
-
-        try:
-            if HAS_PYTHON_SYSTEMD and systemd.daemon.booted():
-                systemd.daemon.notify('READY=1')
-        except SystemError:
-            # Daemon wasn't started by systemd
-            pass
 
         while True:
             try:
@@ -301,7 +304,7 @@ class ProcessManager(object):
             else:
                 return
 
-        for pid, p_map in self._process_map.items():
+        for p_map in six.itervalues(self._process_map):
             p_map['Process'].terminate()
 
         end_time = time.time() + self.wait_for_kill  # when to die

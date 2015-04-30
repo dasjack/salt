@@ -230,8 +230,10 @@ def fileserver_update(fileserver):
     '''
     try:
         if not fileserver.servers:
-            log.error('No fileservers loaded, the master will not be'
-                      'able to serve files to minions')
+            log.error(
+                'No fileservers loaded, the master will not be able to '
+                'serve files to minions'
+            )
             raise SaltMasterError('No fileserver backends available')
         fileserver.update()
     except Exception as exc:
@@ -680,7 +682,8 @@ class RemoteFuncs(object):
                 load['id'],
                 load.get('saltenv', load.get('env')),
                 load.get('ext'),
-                self.mminion.functions)
+                self.mminion.functions,
+                pillar=load.get('pillar_override', {}))
         pillar_dirs = {}
         data = pillar.compile_pillar(pillar_dirs=pillar_dirs)
         if self.opts.get('minion_data_cache', False):
@@ -712,7 +715,10 @@ class RemoteFuncs(object):
             for event in load['events']:
                 self.event.fire_event(event, event['tag'])  # old dup event
                 if load.get('pretag') is not None:
-                    self.event.fire_event(event, tagify(event['tag'], base=load['pretag']))
+                    if 'data' in event:
+                        self.event.fire_event(event['data'], tagify(event['tag'], base=load['pretag']))
+                    else:
+                        self.event.fire_event(event, tagify(event['tag'], base=load['pretag']))
         else:
             tag = load['tag']
             self.event.fire_event(load, tag)

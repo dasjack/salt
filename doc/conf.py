@@ -91,8 +91,6 @@ MOCK_MODULES = [
     # modules, renderers, states, returners, et al
     'django',
     'libvirt',
-    'mako',
-    'mako.template',
     'MySQLdb',
     'MySQLdb.cursors',
     'psutil',
@@ -149,11 +147,11 @@ intersphinx_mapping = {
 # -- General Configuration -----------------------------------------------------
 
 project = 'Salt'
-copyright = '2014 SaltStack, Inc.'
+copyright = '2015 SaltStack, Inc.'
 
 version = salt.version.__version__
 #release = '.'.join(map(str, salt.version.__version_info__))
-release = '2014.7.1'
+release = '2014.7.2'
 
 needs_sphinx = '1.3'
 

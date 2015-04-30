@@ -253,11 +253,10 @@ class SSH(object):
         '''
         Deploy the SSH key if the minions don't auth
         '''
-        if not isinstance(ret[host], dict):
-            if self.opts.get('ssh_key_deploy'):
-                target = self.targets[host]
-                if 'passwd' in target:
-                    self._key_deploy_run(host, target, False)
+        if not isinstance(ret[host], dict) or self.opts.get('ssh_key_deploy'):
+            target = self.targets[host]
+            if 'passwd' in target or self.opts['ssh_passwd']:
+                self._key_deploy_run(host, target, False)
             return ret
         if ret[host].get('stderr', '').count('Permission denied'):
             target = self.targets[host]
@@ -394,22 +393,40 @@ class SSH(object):
                 ret = que.get(False)
                 if 'id' in ret:
                     returned.add(ret['id'])
+                    yield {ret['id']: ret['ret']}
             except Exception:
                 pass
             for host in running:
-                if host in returned:
-                    if not running[host]['thread'].is_alive():
-                        running[host]['thread'].join()
-                        rets.add(host)
+                if not running[host]['thread'].is_alive():
+                    if host not in returned:
+                        # Try to get any returns that came through since we
+                        # last checked
+                        try:
+                            while True:
+                                ret = que.get(False)
+                                if 'id' in ret:
+                                    returned.add(ret['id'])
+                                    yield {ret['id']: ret['ret']}
+                        except Exception:
+                            pass
+
+                        if host not in returned:
+                            error = ('Target \'{0}\' did not return any data, '
+                                     'probably due to an error.').format(host)
+                            ret = {'id': host,
+                                   'ret': error}
+                            log.error(error)
+                            yield {ret['id']: ret['ret']}
+                    running[host]['thread'].join()
+                    rets.add(host)
             for host in rets:
                 if host in running:
                     running.pop(host)
-            if ret:
-                if not isinstance(ret, dict):
-                    continue
-                yield {ret['id']: ret['ret']}
             if len(rets) >= len(self.targets):
                 break
+            # Sleep when limit or all threads started
+            if len(running) >= self.opts.get('ssh_max_procs', 25) or len(self.targets) >= len(running):
+                time.sleep(0.1)
 
     def run_iter(self, mine=False):
         '''
@@ -426,7 +443,7 @@ class SSH(object):
         # Save the invocation information
         argv = self.opts['argv']
 
-        if self.opts['raw_shell']:
+        if self.opts.get('raw_shell', False):
             fun = 'ssh._raw'
             args = argv
         else:
@@ -447,7 +464,7 @@ class SSH(object):
 
         for ret in self.handle_ssh(mine=mine):
             host = next(ret.iterkeys())
-            self.cache_job(jid, host, ret[host])
+            self.cache_job(jid, host, ret[host], fun)
             if self.event:
                 self.event.fire_event(
                         ret,
@@ -456,13 +473,14 @@ class SSH(object):
                             'job'))
             yield ret
 
-    def cache_job(self, jid, id_, ret):
+    def cache_job(self, jid, id_, ret, fun):
         '''
         Cache the job information
         '''
         self.returners['{0}.returner'.format(self.opts['master_job_cache'])]({'jid': jid,
-                                                                                      'id': id_,
-                                                                                      'return': ret})
+                                                                              'id': id_,
+                                                                              'return': ret,
+                                                                              'fun': fun})
 
     def run(self):
         '''
@@ -474,7 +492,7 @@ class SSH(object):
         # Save the invocation information
         argv = self.opts['argv']
 
-        if self.opts['raw_shell']:
+        if self.opts.get('raw_shell', False):
             fun = 'ssh._raw'
             args = argv
         else:
@@ -491,7 +509,10 @@ class SSH(object):
             }
 
         # save load to the master job cache
-        self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load)
+        try:
+            self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load)
+        except Exception as exc:
+            log.error('Could not save load with returner {0}: {1}'.format(self.opts['master_job_cache'], exc))
 
         if self.opts.get('verbose'):
             msg = 'Executing job with jid {0}'.format(jid)
@@ -502,7 +523,7 @@ class SSH(object):
         outputter = self.opts.get('output', 'nested')
         for ret in self.handle_ssh():
             host = next(ret.iterkeys())
-            self.cache_job(jid, host, ret[host])
+            self.cache_job(jid, host, ret[host], fun)
             ret = self.key_deploy(host, ret)
             if not isinstance(ret[host], dict):
                 p_data = {host: ret[host]}
@@ -671,7 +692,7 @@ class Single(object):
         '''
         stdout = stderr = retcode = None
 
-        if self.opts.get('raw_shell'):
+        if self.opts.get('raw_shell', False):
             cmd_str = ' '.join([self._escape_arg(arg) for arg in self.argv])
             stdout, stderr, retcode = self.shell.exec_cmd(cmd_str)
 
@@ -952,6 +973,7 @@ ARGS = {9}\n'''.format(self.minion_config,
             # RSTR was found in stdout but not stderr - which means there
             # is a SHIM command for the master.
             shim_command = re.split(r'\r?\n', stdout, 1)[0].strip()
+            log.debug('SHIM retcode({0}) and command: {1}'.format(retcode, shim_command))
             if 'deploy' == shim_command and retcode == salt.defaults.exitcodes.EX_THIN_DEPLOY:
                 self.deploy()
                 stdout, stderr, retcode = self.shim_cmd(cmd_str)

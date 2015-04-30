@@ -2,6 +2,8 @@
 '''
 Utils for making various web calls. Primarily designed for REST, SOAP, webhooks
 and the like, but also useful for basic HTTP testing.
+
+.. versionaddedd:: 2015.2
 '''
 from __future__ import absolute_import
 
@@ -10,7 +12,10 @@ import pprint
 import os.path
 import json
 import logging
-import salt.ext.six.moves.http_cookiejar  # pylint: disable=E0611
+# pylint: disable=no-name-in-module
+import salt.ext.six.moves.http_cookiejar
+import salt.ext.six.moves.urllib as urllib
+# pylint: enable=no-name-in-module
 from salt.ext.six import string_types
 from salt._compat import ElementTree as ET
 
@@ -32,16 +37,16 @@ except ImportError:
         except ImportError:
             HAS_MATCHHOSTNAME = False
 import socket
-import urllib2
-import httplib
 
 # Import salt libs
 import salt.utils
 import salt.utils.xmlutil as xml
 import salt.loader
 import salt.config
+import salt.version
 from salt.template import compile_template
 from salt import syspaths
+import salt.ext.six.moves.http_client  # pylint: disable=no-name-in-module
 
 # Import 3rd party libs
 try:
@@ -49,11 +54,23 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
-import msgpack
+
+try:
+    import msgpack
+    HAS_MSGPACK = True
+except ImportError:
+    HAS_MSGPACK = False
+
+try:
+    import certifi
+    HAS_CERTIFI = True
+except ImportError:
+    HAS_CERTIFI = False
 
 log = logging.getLogger(__name__)
 JARFILE = os.path.join(syspaths.CACHE_DIR, 'cookies.txt')
 SESSIONJARFILE = os.path.join(syspaths.CACHE_DIR, 'cookies.session.p')
+USERAGENT = 'Salt/{0}'.format(salt.version.__version__)
 
 
 def query(url,
@@ -66,6 +83,7 @@ def query(url,
           header_file=None,
           username=None,
           password=None,
+          auth=None,
           decode=False,
           decode_type='auto',
           status=False,
@@ -95,6 +113,7 @@ def query(url,
           decode_out=None,
           stream=False,
           handle=False,
+          agent=USERAGENT,
           **kwargs):
     '''
     Query a resource, and decode the return data
@@ -107,7 +126,7 @@ def query(url,
                 os.path.join(syspaths.CONFIG_DIR, 'master')
             )
         elif node == 'minion':
-            opts = salt.config.master_config(
+            opts = salt.config.minion_config(
                 os.path.join(syspaths.CONFIG_DIR, 'minion')
             )
         else:
@@ -159,7 +178,7 @@ def query(url,
     if header_list is None:
         header_list = []
 
-    if persist_session is True:
+    if persist_session is True and HAS_MSGPACK:
         # TODO: This is hackish; it will overwrite the session cookie jar with
         # all cookies from this one connection, rather than behaving like a
         # proper cookie jar. Unfortunately, since session cookies do not
@@ -204,6 +223,10 @@ def query(url,
         else:
             sess_cookies.load()
 
+    if agent == USERAGENT:
+        agent = '{0} http.query()'.format(agent)
+    header_dict['User-agent'] = agent
+
     if test is True:
         if test_url is None:
             return {}
@@ -220,12 +243,6 @@ def query(url,
             else:
                 req_kwargs['stream'] = True
 
-        result = sess.request(
-            method, url, params=params, data=data, **req_kwargs
-        )
-        if stream is True or handle is True:
-            return {'handle': result}
-
         # Client-side cert handling
         if cert is not None:
             if isinstance(cert, string_types):
@@ -238,16 +255,23 @@ def query(url,
                 log.error('The client-side certificate path that was passed is '
                           'not valid: {0}'.format(cert))
 
+        result = sess.request(
+            method, url, params=params, data=data, **req_kwargs
+        )
+        result.raise_for_status()
+        if stream is True or handle is True:
+            return {'handle': result}
+
         result_status_code = result.status_code
         result_headers = result.headers
         result_text = result.text
         result_cookies = result.cookies
     else:
-        request = urllib2.Request(url)
-        handlers = (
-            urllib2.HTTPHandler,
-            urllib2.HTTPCookieProcessor(sess_cookies)
-        )
+        request = urllib.Request(url, data)
+        handlers = [
+            urllib.HTTPHandler,
+            urllib.HTTPCookieProcessor(sess_cookies)
+        ]
 
         if url.startswith('https') or port == 443:
             if not HAS_MATCHHOSTNAME:
@@ -292,19 +316,19 @@ def query(url,
                     if hasattr(ssl, 'SSLContext'):
                         # Python >= 2.7.9
                         context = ssl.SSLContext.load_cert_chain(*cert_chain)
-                        handlers.append(urllib2.HTTPSHandler(context=context))  # pylint: disable=E1123
+                        handlers.append(urllib.HTTPSHandler(context=context))  # pylint: disable=E1123
                     else:
                         # Python < 2.7.9
                         cert_kwargs = {
                             'host': request.get_host(),
                             'port': port,
-                            'cert_file': cert[0]
+                            'cert_file': cert_chain[0]
                         }
-                        if len(cert) > 1:
-                            cert_kwargs['key_file'] = cert[1]
-                        handlers[0] = httplib.HTTPSConnection(**cert_kwargs)
+                        if len(cert_chain) > 1:
+                            cert_kwargs['key_file'] = cert_chain[1]
+                        handlers[0] = salt.ext.six.moves.http_client.HTTPSConnection(**cert_kwargs)
 
-        opener = urllib2.build_opener(*handlers)
+        opener = urllib.build_opener(*handlers)
         for header in header_dict:
             request.add_header(header, header_dict[header])
         request.get_method = lambda: method
@@ -343,7 +367,7 @@ def query(url,
     if cookies is not None:
         sess_cookies.save()
 
-    if persist_session is True:
+    if persist_session is True and HAS_MSGPACK:
         # TODO: See persist_session above
         if 'set-cookie' in result_headers:
             with salt.utils.fopen(session_cookie_jar, 'w') as fh_:
@@ -392,7 +416,7 @@ def query(url,
         else:
             text = True
 
-        if os.path.exists(decode_out):
+        if decode_out and os.path.exists(decode_out):
             with salt.utils.fopen(decode_out, 'w') as dof:
                 dof.write(result_text)
 
@@ -439,6 +463,9 @@ def get_ca_bundle(opts=None):
     ):
         if os.path.exists(path):
             return path
+
+    if salt.utils.is_windows() and HAS_CERTIFI:
+        return certifi.where()
 
     return None
 

@@ -392,29 +392,22 @@ def get_containers(all=True,
         status['host'] = {}
         status['host']['interfaces'] = __salt__['network.interfaces']()
 
-    containers = ret = client.containers(all=all,
-                                         trunc=trunc,
-                                         since=since,
-                                         before=before,
-                                         limit=limit)
+    containers = client.containers(all=all,
+                                   trunc=trunc,
+                                   since=since,
+                                   before=before,
+                                   limit=limit)
 
     # Optionally for each container get more granular information from them
     # by inspecting the container
     if inspect:
-        ret = []
         for container in containers:
             container_id = container.get('Id')
             if container_id:
                 inspect = _get_container_infos(container_id)
-                container['detail'] = {}
-                for key, value in inspect.items():
-                    container['detail'][key] = value
-            ret.append(container)
+                container['detail'] = inspect.copy()
 
-    if ret:
-        _valid(status, comment='All containers in out', out=ret)
-    else:
-        _invalid(status)
+    _valid(status, comment='All containers in out', out=containers)
 
     return status
 
@@ -1031,7 +1024,7 @@ def remove_container(container, force=False, v=False):
         remove a running container, Default is ``False``
 
     v
-        verbose mode, Default is ``False``
+        remove the volumes associated to the container, Default is ``False``
 
     CLI Example:
 
@@ -1712,7 +1705,7 @@ def push(repo, tag=None, quiet=False, insecure_registry=False):
                                        oper='>=',
                                        ver2='0.5.0'):
             kwargs['insecure_registry'] = insecure_registry
-        ret = client.pull(repo, **kwargs)
+        ret = client.push(repo, **kwargs)
         if ret:
             image_logs, infos = _parse_image_multilogs_string(ret)
             if image_logs:
@@ -1774,14 +1767,22 @@ def _run_wrapper(status, container, func, cmd, *args, **kwargs):
     container_id = container_info['Id']
     if driver.startswith('lxc-'):
         full_cmd = 'lxc-attach -n {0} -- {1}'.format(container_id, cmd)
-    elif driver.startswith('native-') and HAS_NSENTER:
-        # http://jpetazzo.github.io/2014/03/23/lxc-attach-nsinit-nsenter-docker-0-9/
-        container_pid = container_info['State']['Pid']
-        if container_pid == 0:
-            _invalid(status, id_=container, comment='Container is not running')
-            return status
-        full_cmd = ('nsenter --target {pid} --mount --uts --ipc --net --pid'
-                    ' -- {cmd}'.format(pid=container_pid, cmd=cmd))
+    elif driver.startswith('native-'):
+        if HAS_NSENTER:
+            # http://jpetazzo.github.io/2014/03/23/lxc-attach-nsinit-nsenter-docker-0-9/
+            container_pid = container_info['State']['Pid']
+            if container_pid == 0:
+                _invalid(status, id_=container,
+                         comment='Container is not running')
+                return status
+            full_cmd = (
+                'nsenter --target {pid} --mount --uts --ipc --net --pid'
+                ' -- {cmd}'.format(pid=container_pid, cmd=cmd)
+            )
+        else:
+            raise CommandExecutionError(
+                'nsenter is not installed on the minion, cannot run command'
+            )
     else:
         raise NotImplementedError(
             'Unknown docker ExecutionDriver {0!r}. Or didn\'t find command'
@@ -1807,7 +1808,8 @@ def _run_wrapper(status, container, func, cmd, *args, **kwargs):
 
 def load(imagepath):
     '''
-    Load the specified file at imagepath into docker that was generated from a docker save command
+    Load the specified file at imagepath into docker that was generated from
+   a docker save command
     e.g. `docker load < imagepath`
 
     imagepath
@@ -1823,7 +1825,8 @@ def load(imagepath):
     status = base_status.copy()
     if os.path.isfile(imagepath):
         try:
-            ret = __salt__['cmd.run']('docker load < ' + imagepath)
+            dockercmd = ['docker', 'load', '-i', imagepath]
+            ret = __salt__['cmd.run'](dockercmd)
             if ((isinstance(ret, dict) and
                 ('retcode' in ret) and
                 (ret['retcode'] != 0))):
@@ -1846,6 +1849,8 @@ def load(imagepath):
 
 def save(image, filename):
     '''
+    .. versionadded:: 2015.2.0
+
     Save the specified image to filename from docker
     e.g. `docker save image > filename`
 
@@ -1873,7 +1878,8 @@ def save(image, filename):
 
     if ok:
         try:
-            ret = __salt__['cmd.run']('docker save ' + image + ' > ' + filename)
+            dockercmd = ['docker', 'save', '-o', filename, image]
+            ret = __salt__['cmd.run'](dockercmd)
             if ((isinstance(ret, dict) and
                 ('retcode' in ret) and
                 (ret['retcode'] != 0))):
@@ -2059,7 +2065,7 @@ def get_container_root(container):
         'containers',
         _get_container_infos(container)['Id'],
     )
-    default_rootfs = os.path.join(default_path, 'roofs')
+    default_rootfs = os.path.join(default_path, 'rootfs')
     rootfs_re = re.compile(r'^lxc.rootfs\s*=\s*(.*)\s*$', re.U)
     try:
         lxcconfig = os.path.join(default_path, 'config.lxc')
