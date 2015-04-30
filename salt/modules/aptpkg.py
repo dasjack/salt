@@ -514,7 +514,7 @@ def install(name=None,
         if pkgs is None and kwargs.get('version') and len(pkg_params) == 1:
             # Only use the 'version' param if 'name' was not specified as a
             # comma-separated list
-            pkg_params = {name: kwargs.get('version')}
+            pkg_params = {name: str(kwargs.get('version'))}
         targets = []
         for param, version_num in six.iteritems(pkg_params):
             if version_num is None:
@@ -527,7 +527,7 @@ def install(name=None,
                                                         ver2=cver,
                                                         cmp_func=version_cmp):
                     downgrade = True
-                targets.append('{0}={1}'.format(param, version_num.lstrip('=')))
+                targets.append('{0}={1}'.format(param, str(version_num).lstrip('=')))
         if fromrepo:
             log.info('Targeting repo {0!r}'.format(fromrepo))
         cmd = ['apt-get', '-q', '-y']
@@ -1424,7 +1424,13 @@ def mod_repo(repo, saltenv='base', **kwargs):
                         cmd = 'apt-add-repository {0}'.format(_cmd_quote(repo))
                     else:
                         cmd = 'apt-add-repository -y {0}'.format(_cmd_quote(repo))
-                    out = __salt__['cmd.run_stdout'](cmd, **kwargs)
+                    out = __salt__['cmd.run_all'](cmd, **kwargs)
+                    if out['retcode']:
+                        raise CommandExecutionError(
+                             'Unable to add PPA {0!r}. '
+                             '{1!r} exited with status {2!s}: '
+                             '{3!r} '.format(repo[4:], cmd, out['retcode'], out['stderr'])
+                        )
                     # explicit refresh when a repo is modified.
                     if kwargs.get('refresh_db', True):
                         refresh_db()
@@ -1534,6 +1540,8 @@ def mod_repo(repo, saltenv='base', **kwargs):
         if not keyid or not keyserver:
             error_str = 'both keyserver and keyid options required.'
             raise NameError(error_str)
+        if isinstance(keyid, int):  # yaml can make this an int, we need the hex version
+            keyid = hex(keyid)
         cmd = 'apt-key export {0}'.format(_cmd_quote(keyid))
         output = __salt__['cmd.run_stdout'](cmd, **kwargs)
         imported = output.startswith('-----BEGIN PGP')

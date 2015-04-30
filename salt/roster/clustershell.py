@@ -38,7 +38,7 @@ def targets(tgt, tgt_type='glob', **kwargs):
         ports = list(map(int, str(ports).split(',')))
 
     hosts = list(NodeSet(tgt))
-    host_addrs = {h: socket.gethostbyname(h) for h in hosts}
+    host_addrs = dict([(h, socket.gethostbyname(h)) for h in hosts])
 
     for host, addr in host_addrs.items():
         addr = str(addr)
@@ -49,7 +49,7 @@ def targets(tgt, tgt_type='glob', **kwargs):
                 sock.connect((addr, port))
                 sock.shutdown(socket.SHUT_RDWR)
                 sock.close()
-                ret[host] = {'host': addr, 'port': port}
+                ret[host] = {'host': host, 'port': port}
             except socket.error:
                 pass
     return ret

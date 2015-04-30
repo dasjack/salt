@@ -5,6 +5,8 @@ from __future__ import absolute_import
 import os
 import sys
 
+import salt.utils.job
+from salt._compat import string_types
 from salt.utils import parsers, print_cli
 from salt.utils.verify import verify_files
 from salt.exceptions import (
@@ -91,7 +93,11 @@ class SaltCMD(parsers.SaltCMDOptionParser):
                 batch = salt.cli.batch.Batch(self.config, eauth=eauth)
                 # Printing the output is already taken care of in run() itself
                 for res in batch.run():
-                    pass
+                    if self.options.failhard:
+                        for ret in res.itervalues():
+                            retcode = salt.utils.job.get_retcode(ret)
+                            if retcode != 0:
+                                sys.exit(retcode)
 
         else:
             if self.options.timeout <= 0:
@@ -235,7 +241,7 @@ class SaltCMD(parsers.SaltCMDOptionParser):
         for each_minion in ret:
             minion_ret = ret[each_minion].get('ret')
             if (
-                    isinstance(minion_ret, (str, unicode))
+                    isinstance(minion_ret, string_types)
                     and minion_ret.startswith("Minion did not return")
             ):
                 not_return_counter += 1
@@ -292,8 +298,9 @@ class SaltCMD(parsers.SaltCMDOptionParser):
             ret[key] = data['ret']
             if 'out' in data:
                 out = data['out']
-            if 'retcode' in data:
-                retcode = data['retcode']
+            ret_retcode = salt.utils.job.get_retcode(data)
+            if ret_retcode > retcode:
+                retcode = ret_retcode
         return ret, out, retcode
 
     def _format_error(self, minion_error):

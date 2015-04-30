@@ -1,5 +1,4 @@
 !define PRODUCT_NAME "Salt Minion"
-!define PRODUCT_VERSION "{{ salt_version }}"
 !define PRODUCT_PUBLISHER "SaltStack, Inc"
 !define PRODUCT_WEB_SITE "http://saltstack.org"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\salt-minion.exe"
@@ -16,6 +15,12 @@
 !include "x64.nsh"
 ${StrLoc}
 ${StrStrAdv}
+
+!ifdef SaltVersion
+  !define PRODUCT_VERSION "${SaltVersion}"
+!else
+  !define PRODUCT_VERSION "Undefined Version"
+!endif
 
 !if "$%PROCESSOR_ARCHITECTURE%" == "AMD64"
   !define CPUARCH "AMD64"
@@ -36,6 +41,7 @@ Var MinionName_State
 !define MUI_ABORTWARNING
 !define MUI_ICON "salt.ico"
 !define MUI_UNICON "salt.ico"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "panel.bmp"
 
 ; Welcome page
 !insertmacro MUI_PAGE_WELCOME
@@ -148,13 +154,8 @@ Function MsiQueryProductState
 
 FunctionEnd
 
-!ifdef SaltVersion
-    Name "${PRODUCT_NAME} ${SaltVersion}"
-    OutFile "Salt-Minion-${SaltVersion}-${CPUARCH}-Setup.exe"
-!else
-    Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-    OutFile "Salt-Minion-${PRODUCT_VERSION}-${CPUARCH}-Setup.exe"
-!endif
+Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
+OutFile "Salt-Minion-${PRODUCT_VERSION}-${CPUARCH}-Setup.exe"
 InstallDir "c:\salt"
 InstallDirRegKey HKLM "${PRODUCT_DIR_REGKEY}" ""
 ShowInstDetails show
@@ -193,7 +194,39 @@ SectionEnd
 
 Section "MainSection" SEC01
 
-  ExecWait "net stop salt-minion" ;stopping service before upgrading
+  ; Remove previous version of salt, but don't remove conf and key
+  ; Service must be stopped to delete files that are in use
+  ExecWait "net stop salt-minion"
+  ; Remove the service in case we're installing over an older version
+  ; It will be recreated later
+  ExecWait "sc delete salt-minion"
+
+  ; Delete everything except conf and var
+  ClearErrors
+  FindFirst $0 $1 $INSTDIR\*
+
+  loop:
+    IfFileExists "$INSTDIR\$1\*.*" IsDir IsFile
+
+    IsDir:
+      ${IfNot} $1 == "."
+      ${AndIfNot} $1 == ".."
+      ${AndIfNot} $1 == "conf"
+      ${AndIfNot} $1 == "var"
+        RMDir /r "$INSTDIR\$1"
+      ${EndIf}
+
+    IsFile:
+      DELETE "$INSTDIR\$1"
+
+    FindNext $0 $1
+    IfErrors done
+
+    Goto loop
+
+  done:
+    FindClose $0
+
   Sleep 3000
   SetOutPath "$INSTDIR\"
   SetOverwrite try
@@ -290,36 +323,6 @@ Function .onInit
     Pop $R2
     Pop $R1
     Pop $R0
-
-  ; Remove previous version of salt, but don't remove conf and key
-  ExecWait "net stop salt-minion"
-  ExecWait "sc delete salt-minion"
-
-  ; Delete everything except conf and var
-  ClearErrors
-  FindFirst $0 $1 $INSTDIR\*
-
-  loop:
-    IfFileExists "$INSTDIR\$1\*.*" IsDir IsFile
-
-    IsDir:
-      ${IfNot} $1 == "."
-      ${AndIfNot} $1 == ".."
-      ${AndIfNot} $1 == "conf"
-      ${AndIfNot} $1 == "var"
-        RMDir /r "$INSTDIR\$1"
-      ${EndIf}
-
-    IsFile:
-      DELETE "$INSTDIR\$1"
-
-    FindNext $0 $1
-    IfErrors done
-
-    Goto loop
-
-  done:
-    FindClose $0
 
 FunctionEnd
 
