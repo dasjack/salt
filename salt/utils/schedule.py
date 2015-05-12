@@ -145,7 +145,7 @@ the scheduled job when the minion starts up.  Sometimes this is not the desired
 situation.  Using the 'run_on_start' parameter set to False will cause the
 scheduler to skip this first run and wait until the next scheduled run.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 .. code-block:: yaml
 
@@ -195,7 +195,7 @@ master.  Because of this information for these jobs will not be listed in the
 ``return_job`` parameter will return the data back to the Salt master, making
 the job available in this list.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
     schedule:
       job1:
@@ -209,7 +209,7 @@ but can be used to search for specific jobs later if combined with the
 return_job parameter.  The metadata parameter must be specified as a
 dictionary, othewise it will be ignored.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
     schedule:
       job1:
@@ -984,10 +984,11 @@ def clean_proc_dir(opts):
         with salt.utils.fopen(fn_, 'rb') as fp_:
             job = None
             try:
-                job_data = fp_.read()
-                if job_data:
-                    job = salt.payload.Serial(opts).load(fp_)
+                job = salt.payload.Serial(opts).load(fp_)
             except Exception:  # It's corrupted
+                # Windows cannot delete an open file
+                if salt.utils.is_windows():
+                    fp_.close()
                 try:
                     os.unlink(fn_)
                     continue

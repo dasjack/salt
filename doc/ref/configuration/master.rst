@@ -224,6 +224,21 @@ each of Salt's module types such as "runners", "output", "wheel", "modules",
 
     extension_modules: srv/modules
 
+.. conf_minion:: module_dirs
+
+``module_dirs``
+---------------
+
+Default: ``[]``
+
+Like ``extension_modules``, but a list of extra directories to search
+for Salt modules.
+
+.. code-block:: yaml
+
+    module_dirs:
+      - /var/cache/salt/minion/extmods
+
 .. conf_master:: cachedir
 
 ``cachedir``
@@ -379,7 +394,7 @@ local job cache on the master.
 ``event_return``
 -----------------
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 Default: ``''``
 
@@ -476,6 +491,10 @@ that connect to a master via localhost.
 
     presence_events: False
 
+
+Salt-SSH Configuration
+======================
+
 .. conf_master:: roster_file
 
 ``roster_file``
@@ -488,6 +507,23 @@ Pass in an alternative location for the salt-ssh roster file.
 .. code-block:: yaml
 
     roster_file: /root/roster
+
+.. conf_master:: ssh_minion_opts
+
+``ssh_minion_opts``
+-------------------
+
+Default: None
+
+Pass in minion option overrides that will be inserted into the SHIM for
+salt-ssh calls. The local minion config is not used for salt-ssh. Can be
+overridden on a per-minion basis in the roster (``minion_opts``)
+
+.. code-block:: yaml
+
+    minion_opts:
+      gpg_keydir: /root/gpg
+
 
 Master Security Settings
 ========================
@@ -1855,7 +1891,7 @@ There are additional details at :ref:`salt-pillars`
 ``ext_pillar_first``
 --------------------
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 The ext_pillar_first option allows for external pillar sources to populate
 before file system pillar. This allows for targeting file system pillar from
