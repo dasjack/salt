@@ -26,10 +26,18 @@ from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=n
 import salt.ext.six as six
 from salt.ext.six import string_types
 from salt.ext.six.moves import shlex_quote as _cmd_quote, range
+
+try:
+    import yum
+    HAS_YUM = True
+except ImportError:
+    from salt.ext.six.moves import configparser
+    HAS_YUM = False
 # pylint: enable=import-error
 
 # Import salt libs
 import salt.utils
+import salt.utils.decorators as decorators
 from salt.exceptions import (
     CommandExecutionError, MinionError, SaltInvocationError
 )
@@ -231,7 +239,7 @@ def _rpm_pkginfo(name):
     Parses RPM metadata and returns a pkginfo namedtuple
     '''
     # REPOID is not a valid tag for the rpm command. Remove it and replace it
-    # with "none"
+    # with 'none'
     queryformat = __QUERYFORMAT.replace('%{REPOID}', 'none')
     output = __salt__['cmd.run_stdout'](
         'rpm -qp --queryformat {0!r} {1}'.format(_cmd_quote(queryformat), name),
@@ -251,6 +259,106 @@ def _rpm_installed(name):
         return pkg.name if pkg.name in list_pkgs() else None
     except AttributeError:
         return None
+
+
+def _get_yum_config():
+    '''
+    Returns a dict representing the yum config options and values.
+
+    We try to pull all of the yum config options into a standard dict object.
+    This is currently only used to get the reposdir settings, but could be used
+    for other things if needed.
+
+    If the yum python library is available, use that, which will give us
+    all of the options, including all of the defaults not specified in the
+    yum config.  Additionally, they will all be of the correct object type.
+
+    If the yum library is not available, we try to read the yum.conf
+    directly ourselves with a minimal set of "defaults".
+    '''
+    # in case of any non-fatal failures, these defaults will be used
+    conf = {
+        'reposdir': ['/etc/yum/repos.d', '/etc/yum.repos.d'],
+    }
+
+    if HAS_YUM:
+        try:
+            yb = yum.YumBase()
+            yb.preconf.init_plugins = False
+            for name, value in yb.conf.iteritems():
+                conf[name] = value
+        except (AttributeError, yum.Errors.ConfigError) as exc:
+            raise CommandExecutionError(
+                'Could not query yum config: {0}'.format(exc)
+            )
+    else:
+        # fall back to parsing the config ourselves
+        # Look for the config the same order yum does
+        fn = None
+        paths = ('/etc/yum/yum.conf', '/etc/yum.conf')
+        for path in paths:
+            if os.path.exists(path):
+                fn = path
+                break
+
+        if not fn:
+            raise CommandExecutionError(
+                'No suitable yum config file found in: {0}'.format(paths)
+            )
+
+        cp = configparser.ConfigParser()
+        try:
+            cp.read(fn)
+        except (IOError, OSError) as exc:
+            raise CommandExecutionError(
+                'Unable to read from {0}: {1}'.format(fn, exc)
+            )
+
+        if cp.has_section('main'):
+            for opt in cp.options('main'):
+                if opt in ('reposdir', 'commands', 'excludes'):
+                    # these options are expected to be lists
+                    conf[opt] = [x.strip() for x in cp.get('main', opt).split(',')]
+                else:
+                    conf[opt] = cp.get('main', opt)
+        else:
+            log.warning('Could not find [main] section in {0}, using internal defaults'.format(fn))
+
+    return conf
+
+
+def _get_yum_config_value(name):
+    '''
+    Look for a specific config variable and return its value
+    '''
+    conf = _get_yum_config()
+    if name in conf.keys():
+        return conf.get(name)
+    return None
+
+
+def _normalize_basedir(basedir=None):
+    '''
+    Takes a basedir argument as a string or a list.  If the string or list is empty,
+    then look up the default from the 'reposdir' option in the yum config.
+
+    Returns a list of directories.
+    '''
+    if basedir is None:
+        basedir = []
+
+    # if we are passed a string (for backward compatibility), convert to a list
+    if isinstance(basedir, basestring):
+        basedir = [x.strip() for x in basedir.split(',')]
+
+    # nothing specified, so use the reposdir option as the default
+    if not basedir:
+        basedir = _get_yum_config_value('reposdir')
+
+    if not isinstance(basedir, list) or not basedir:
+        raise SaltInvocationError('Could not determine any repo directories')
+
+    return basedir
 
 
 def normalize_name(name):
@@ -1515,32 +1623,40 @@ def group_diff(name):
     return ret
 
 
-def list_repos(basedir='/etc/yum.repos.d'):
+def list_repos(basedir=None):
     '''
-    Lists all repos in <basedir> (default: /etc/yum.repos.d/).
+    Lists all repos in <basedir> (default: all dirs in `reposdir` yum option).
 
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' pkg.list_repos
+        salt '*' pkg.list_repos basedir=/path/to/dir
+        salt '*' pkg.list_repos basedir=/path/to/dir,/path/to/another/dir
     '''
+
+    basedirs = _normalize_basedir(basedir)
     repos = {}
-    for repofile in os.listdir(basedir):
-        repopath = '{0}/{1}'.format(basedir, repofile)
-        if not repofile.endswith('.repo'):
+    log.debug('Searching for repos in {0}'.format(basedirs))
+    for bdir in basedirs:
+        if not os.path.exists(bdir):
             continue
-        filerepos = _parse_repo_file(repopath)[1]
-        for reponame in filerepos.keys():
-            repo = filerepos[reponame]
-            repo['file'] = repopath
-            repos[reponame] = repo
+        for repofile in os.listdir(bdir):
+            repopath = '{0}/{1}'.format(bdir, repofile)
+            if not repofile.endswith('.repo'):
+                continue
+            filerepos = _parse_repo_file(repopath)[1]
+            for reponame in filerepos.keys():
+                repo = filerepos[reponame]
+                repo['file'] = repopath
+                repos[reponame] = repo
     return repos
 
 
-def get_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W0613
+def get_repo(repo, basedir=None, **kwargs):  # pylint: disable=W0613
     '''
-    Display a repo from <basedir> (default basedir: ``/etc/yum.repos.d``).
+    Display a repo from <basedir> (default basedir: all dirs in `reposdir` yum option).
 
     CLI Examples:
 
@@ -1548,6 +1664,7 @@ def get_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W06
 
         salt '*' pkg.get_repo myrepo
         salt '*' pkg.get_repo myrepo basedir=/path/to/dir
+        salt '*' pkg.get_repo myrepo basedir=/path/to/dir,/path/to/another/dir
     '''
     repos = list_repos(basedir)
 
@@ -1564,9 +1681,9 @@ def get_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W06
     return {}
 
 
-def del_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W0613
+def del_repo(repo, basedir=None, **kwargs):  # pylint: disable=W0613
     '''
-    Delete a repo from <basedir> (default basedir: /etc/yum.repos.d).
+    Delete a repo from <basedir> (default basedir: all dirs in `reposdir` yum option).
 
     If the .repo file that the repo exists in does not contain any other repo
     configuration, the file itself will be deleted.
@@ -1577,12 +1694,15 @@ def del_repo(repo, basedir='/etc/yum.repos.d', **kwargs):  # pylint: disable=W06
 
         salt '*' pkg.del_repo myrepo
         salt '*' pkg.del_repo myrepo basedir=/path/to/dir
+        salt '*' pkg.del_repo myrepo basedir=/path/to/dir,/path/to/another/dir
     '''
-    repos = list_repos(basedir)
+    # this is so we know which dirs are searched for our error messages below
+    basedirs = _normalize_basedir(basedir)
+    repos = list_repos(basedirs)
 
     if repo not in repos:
         return 'Error: the {0} repo does not exist in {1}'.format(
-            repo, basedir)
+            repo, basedirs)
 
     # Find out what file the repo lives in
     repofile = ''
@@ -1682,18 +1802,27 @@ def mod_repo(repo, basedir=None, **kwargs):
 
     # Give the user the ability to change the basedir
     repos = {}
-    if basedir:
-        repos = list_repos(basedir)
-    else:
-        repos = list_repos()
-        basedir = '/etc/yum.repos.d'
+    basedirs = _normalize_basedir(basedir)
+    repos = list_repos(basedirs)
 
     repofile = ''
     header = ''
     filerepos = {}
     if repo not in repos:
-        # If the repo doesn't exist, create it in a new file
-        repofile = '{0}/{1}.repo'.format(basedir, repo)
+        # If the repo doesn't exist, create it in a new file in the first
+        # repo directory that exists
+        newdir = None
+        for d in basedirs:
+            if os.path.exists(d):
+                newdir = d
+                break
+        if not newdir:
+            raise SaltInvocationError(
+                'The repo does not exist and needs to be created, but none '
+                'of the following basedir directories exist: {0}'.format(basedirs)
+            )
+
+        repofile = '{0}/{1}.repo'.format(newdir, repo)
 
         if 'name' not in repo_opts:
             raise SaltInvocationError(
@@ -1783,9 +1912,10 @@ def _parse_repo_file(filename):
                     comps = line.strip().split('=')
                     repos[repo][comps[0].strip()] = '='.join(comps[1:])
                 except KeyError:
-                    log.error('Failed to parse line in {0}, '
-                              'offending line was "{1}"'.format(filename,
-                                                                line.rstrip()))
+                    log.error(
+                        'Failed to parse line in {0}, offending line was '
+                        '\'{1}\''.format(filename, line.rstrip())
+                    )
 
     return (header, repos)
 
@@ -1875,4 +2005,161 @@ def owner(*paths):
             ret[path] = ''
     if len(ret) == 1:
         return next(ret.itervalues())
+    return ret
+
+
+def modified(*packages, **flags):
+    '''
+    List the modified files that belong to a package. Not specifying any packages
+    will return a list of _all_ modified files on the system's RPM database.
+
+    .. versionadded:: 2015.5.0
+
+    Filtering by flags (True or False):
+
+    size
+        Include only files where size changed.
+
+    mode
+        Include only files which file's mode has been changed.
+
+    checksum
+        Include only files which MD5 checksum has been changed.
+
+    device
+        Include only files which major and minor numbers has been changed.
+
+    symlink
+        Include only files which are symbolic link contents.
+
+    owner
+        Include only files where owner has been changed.
+
+    group
+        Include only files where group has been changed.
+
+    time
+        Include only files where modification time of the file has been changed.
+
+    capabilities
+        Include only files where capabilities differ or not. Note: supported only on newer RPM versions.
+
+    CLI Examples:
+
+    .. code-block:: bash
+
+        salt '*' pkg.modified
+        salt '*' pkg.modified httpd
+        salt '*' pkg.modified httpd postfix
+        salt '*' pkg.modified httpd owner=True group=False
+    '''
+
+    return __salt__['lowpkg.modified'](*packages, **flags)
+
+
+@decorators.which('yumdownloader')
+def download(*packages):
+    '''
+    .. versionadded:: 2015.5.0
+
+    Download packages to the local disk. Requires ``yumdownloader`` from
+    ``yum-utils`` package.
+
+    .. note::
+
+        ``yum-utils`` will already be installed on the minion if the package
+        was installed from the Fedora / EPEL repositories.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' pkg.download httpd
+        salt '*' pkg.download httpd postfix
+    '''
+    if not packages:
+        raise SaltInvocationError('No packages were specified')
+
+    CACHE_DIR = '/var/cache/yum/packages'
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+    cached_pkgs = os.listdir(CACHE_DIR)
+    to_purge = []
+    for pkg in packages:
+        to_purge.extend([os.path.join(CACHE_DIR, x)
+                         for x in cached_pkgs
+                         if x.startswith('{0}-'.format(pkg))])
+    for purge_target in set(to_purge):
+        log.debug('Removing cached package {0}'.format(purge_target))
+        try:
+            os.unlink(purge_target)
+        except OSError as exc:
+            log.error('Unable to remove {0}: {1}'.format(purge_target, exc))
+
+    __salt__['cmd.run'](
+        'yumdownloader -q {0} --destdir={1}'.format(
+            ' '.join(packages), CACHE_DIR
+        ),
+        output_loglevel='trace'
+    )
+    ret = {}
+    for dld_result in os.listdir(CACHE_DIR):
+        if not dld_result.endswith('.rpm'):
+            continue
+        pkg_name = None
+        pkg_file = None
+        for query_pkg in packages:
+            if dld_result.startswith('{0}-'.format(query_pkg)):
+                pkg_name = query_pkg
+                pkg_file = dld_result
+                break
+        if pkg_file is not None:
+            ret[pkg_name] = os.path.join(CACHE_DIR, pkg_file)
+
+    if not ret:
+        raise CommandExecutionError(
+            'Unable to download any of the following packages: {0}'
+            .format(', '.join(packages))
+        )
+
+    failed = [x for x in packages if x not in ret]
+    if failed:
+        ret['_error'] = ('The following package(s) failed to download: {0}'
+                         .format(', '.join(failed)))
+    return ret
+
+
+def diff(*paths):
+    '''
+    Return a formatted diff between current files and original in a package.
+    NOTE: this function includes all files (configuration and not), but does
+    not work on binary content.
+
+    :param path: Full path to the installed file
+    :return: Difference string or raises and exception if examined file is binary.
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt '*' pkg.diff /etc/apache2/httpd.conf /etc/sudoers
+    '''
+    ret = {}
+
+    pkg_to_paths = {}
+    for pth in paths:
+        pth_pkg = __salt__['lowpkg.owner'](pth)
+        if not pth_pkg:
+            ret[pth] = os.path.exists(pth) and 'Not managed' or 'N/A'
+        else:
+            if pkg_to_paths.get(pth_pkg) is None:
+                pkg_to_paths[pth_pkg] = []
+            pkg_to_paths[pth_pkg].append(pth)
+
+    if pkg_to_paths:
+        local_pkgs = __salt__['pkg.download'](*pkg_to_paths.keys())
+        for pkg, files in pkg_to_paths.items():
+            for path in files:
+                ret[path] = __salt__['lowpkg.diff'](local_pkgs[pkg]['path'], path) or 'Unchanged'
+
     return ret

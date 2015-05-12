@@ -298,11 +298,23 @@ def check_user(user):
         pwuser = pwd.getpwnam(user)
         try:
             if hasattr(os, 'initgroups'):
-                os.initgroups(user, pwuser.pw_gid)
+                os.initgroups(user, pwuser.pw_gid)  # pylint: disable=minimum-python-version
             else:
                 os.setgroups(salt.utils.get_gid_list(user, include_default=False))
             os.setgid(pwuser.pw_gid)
             os.setuid(pwuser.pw_uid)
+
+            # We could just reset the whole environment but let's just override
+            # the variables we can get from pwuser
+            if 'HOME' in os.environ:
+                os.environ['HOME'] = pwuser.pw_dir
+
+            if 'SHELL' in os.environ:
+                os.environ['SHELL'] = pwuser.pw_shell
+
+            for envvar in ('USER', 'LOGNAME'):
+                if envvar in os.environ:
+                    os.environ[envvar] = pwuser.pw_name
 
         except OSError:
             msg = 'Salt configured to run as user "{0}" but unable to switch.'

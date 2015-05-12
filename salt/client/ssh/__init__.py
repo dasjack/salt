@@ -253,11 +253,10 @@ class SSH(object):
         '''
         Deploy the SSH key if the minions don't auth
         '''
-        if not isinstance(ret[host], dict):
-            if self.opts.get('ssh_key_deploy'):
-                target = self.targets[host]
-                if 'passwd' in target:
-                    self._key_deploy_run(host, target, False)
+        if not isinstance(ret[host], dict) or self.opts.get('ssh_key_deploy'):
+            target = self.targets[host]
+            if 'passwd' in target or self.opts['ssh_passwd']:
+                self._key_deploy_run(host, target, False)
             return ret
         if ret[host].get('stderr', '').count('Permission denied'):
             target = self.targets[host]
@@ -425,6 +424,9 @@ class SSH(object):
                     running.pop(host)
             if len(rets) >= len(self.targets):
                 break
+            # Sleep when limit or all threads started
+            if len(running) >= self.opts.get('ssh_max_procs', 25) or len(self.targets) >= len(running):
+                time.sleep(0.1)
 
     def run_iter(self, mine=False):
         '''
@@ -462,7 +464,7 @@ class SSH(object):
 
         for ret in self.handle_ssh(mine=mine):
             host = next(ret.iterkeys())
-            self.cache_job(jid, host, ret[host])
+            self.cache_job(jid, host, ret[host], fun)
             if self.event:
                 self.event.fire_event(
                         ret,
@@ -471,13 +473,14 @@ class SSH(object):
                             'job'))
             yield ret
 
-    def cache_job(self, jid, id_, ret):
+    def cache_job(self, jid, id_, ret, fun):
         '''
         Cache the job information
         '''
         self.returners['{0}.returner'.format(self.opts['master_job_cache'])]({'jid': jid,
-                                                                                      'id': id_,
-                                                                                      'return': ret})
+                                                                              'id': id_,
+                                                                              'return': ret,
+                                                                              'fun': fun})
 
     def run(self):
         '''
@@ -506,7 +509,10 @@ class SSH(object):
             }
 
         # save load to the master job cache
-        self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load)
+        try:
+            self.returners['{0}.save_load'.format(self.opts['master_job_cache'])](jid, job_load)
+        except Exception as exc:
+            log.error('Could not save load with returner {0}: {1}'.format(self.opts['master_job_cache'], exc))
 
         if self.opts.get('verbose'):
             msg = 'Executing job with jid {0}'.format(jid)
@@ -517,7 +523,7 @@ class SSH(object):
         outputter = self.opts.get('output', 'nested')
         for ret in self.handle_ssh():
             host = next(ret.iterkeys())
-            self.cache_job(jid, host, ret[host])
+            self.cache_job(jid, host, ret[host], fun)
             ret = self.key_deploy(host, ret)
             if not isinstance(ret[host], dict):
                 p_data = {host: ret[host]}
@@ -571,6 +577,7 @@ class Single(object):
             fsclient=None,
             thin=None,
             mine=False,
+            minion_opts=None,
             **kwargs):
         # Get mine setting and mine_functions if defined in kwargs (from roster)
         self.mine = mine
@@ -617,12 +624,15 @@ class Single(object):
                 'sudo': sudo,
                 'tty': tty,
                 'mods': self.mods}
-        self.minion_config = yaml.dump(
-                {
+        self.minion_opts = opts.get('ssh_minion_opts', {})
+        if minion_opts is not None:
+            self.minion_opts.update(minion_opts)
+        self.minion_opts.update({
                     'root_dir': os.path.join(self.thin_dir, 'running_data'),
                     'id': self.id,
                     'sock_dir': '/',
-                }, width=1000).strip()
+                })
+        self.minion_config = yaml.dump(self.minion_opts)
         self.target = kwargs
         self.target.update(args)
         self.serial = salt.payload.Serial(opts)
@@ -735,6 +745,7 @@ class Single(object):
                 self.opts,
                 self.id,
                 fsclient=self.fsclient,
+                minion_opts=self.minion_opts,
                 **self.target)
             opts_pkg = pre_wrapper['test.opts_pkg']()
             opts_pkg['file_roots'] = self.opts['file_roots']
@@ -792,6 +803,7 @@ class Single(object):
             opts,
             self.id,
             fsclient=self.fsclient,
+            minion_opts=self.minion_opts,
             **self.target)
         self.wfuncs = salt.loader.ssh_wrapper(opts, wrapper, self.context)
         wrapper.wfuncs = self.wfuncs
@@ -849,7 +861,10 @@ class Single(object):
             debug = '1'
         arg_str = '''
 OPTIONS = OBJ()
-OPTIONS.config = '{0}'
+OPTIONS.config = \
+"""
+{0}
+"""
 OPTIONS.delimiter = '{1}'
 OPTIONS.saltdir = '{2}'
 OPTIONS.checksum = '{3}'
@@ -932,8 +947,8 @@ ARGS = {9}\n'''.format(self.minion_config,
         cmd_str = self._cmd_str()
         stdout, stderr, retcode = self.shim_cmd(cmd_str)
 
-        log.debug('STDOUT {1}\n{0}'.format(stdout, self.target['host']))
-        log.debug('STDERR {1}\n{0}'.format(stderr, self.target['host']))
+        log.trace('STDOUT {1}\n{0}'.format(stdout, self.target['host']))
+        log.trace('STDERR {1}\n{0}'.format(stderr, self.target['host']))
         log.debug('RETCODE {1}: {0}'.format(retcode, self.target['host']))
 
         error = self.categorize_shim_errors(stdout, stderr, retcode)

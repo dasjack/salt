@@ -12,7 +12,6 @@ import sys
 import copy
 import json
 import time
-import errno
 import signal
 import shutil
 import pprint
@@ -238,7 +237,6 @@ class TestDaemon(object):
         master = salt.master.Master(self.master_opts)
         self.master_process = multiprocessing.Process(target=master.start)
         self.master_process.start()
-
         minion = salt.minion.Minion(self.minion_opts)
         self.minion_process = multiprocessing.Process(target=minion.tune_in)
         self.minion_process.start()
@@ -278,9 +276,9 @@ class TestDaemon(object):
         # Wait for the daemons to all spin up
         time.sleep(5)
 
-        #smaster = salt.daemons.flo.IofloMaster(self.syndic_master_opts)
-        #self.smaster_process = multiprocessing.Process(target=smaster.start)
-        #self.smaster_process.start()
+        # smaster = salt.daemons.flo.IofloMaster(self.syndic_master_opts)
+        # self.smaster_process = multiprocessing.Process(target=smaster.start)
+        # self.smaster_process.start()
 
         # no raet syndic daemon yet
 
@@ -436,6 +434,24 @@ class TestDaemon(object):
             roster.write('  user: {0}\n'.format(pwd.getpwuid(os.getuid()).pw_name))
             roster.write('  priv: {0}/{1}'.format(TMP_CONF_DIR, 'key_test'))
 
+    @classmethod
+    def config(cls, role):
+        '''
+        Return a configuration for a master/minion/syndic.
+
+        Currently these roles are:
+            * master
+            * minion
+            * syndic
+            * syndic_master
+            * sub_minion
+        '''
+        return RUNTIME_CONFIGS[role]
+
+    @classmethod
+    def config_location(cls):
+        return TMP_CONF_DIR
+
     @property
     def client(self):
         '''
@@ -489,7 +505,7 @@ class TestDaemon(object):
             minion_opts['raet_port'] = 64510
             sub_minion_opts['transport'] = 'raet'
             sub_minion_opts['raet_port'] = 64520
-            #syndic_master_opts['transport'] = 'raet'
+            # syndic_master_opts['transport'] = 'raet'
 
         # Set up config options that require internal data
         master_opts['pillar_roots'] = {
@@ -680,7 +696,7 @@ class TestDaemon(object):
         sync_needed = self.parser.options.clean
         if self.parser.options.clean is False:
             def sumfile(fpath):
-                # Since we will be do'in this for small files, it should be ok
+                # Since we will be doing this for small files, it should be ok
                 fobj = fopen(fpath)
                 m = md5()
                 while True:

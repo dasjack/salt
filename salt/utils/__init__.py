@@ -93,6 +93,15 @@ try:
 except ImportError:
     HAS_SETPROCTITLE = False
 
+try:
+    import ctypes
+    import ctypes.util
+    libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("c"))
+    res_init = libc.__res_init
+    HAS_RESINIT = True
+except (ImportError, OSError, AttributeError):
+    HAS_RESINIT = False
+
 # Import salt libs
 from salt.defaults import DEFAULT_TARGET_DELIM
 import salt.defaults.exitcodes
@@ -531,6 +540,9 @@ def dns_check(addr, safe=False, ipv6=False):
     '''
     error = False
     try:
+        # issue #21397: force glibc to re-read resolv.conf
+        if HAS_RESINIT:
+            res_init()
         hostnames = socket.getaddrinfo(
             addr, None, socket.AF_UNSPEC, socket.SOCK_STREAM
         )
@@ -2397,10 +2409,21 @@ def get_encodings():
     return a list of string encodings to try
     '''
     encodings = []
-    loc = locale.getdefaultlocale()[-1]
-    if loc:
-        encodings.append(loc)
-    encodings.append(sys.getdefaultencoding())
+
+    try:
+        loc_enc = locale.getdefaultlocale()[-1]
+    except (ValueError, IndexError):  # system locale is nonstandard or malformed
+        loc_enc = None
+    if loc_enc:
+        encodings.append(loc_enc)
+
+    try:
+        enc = sys.getdefaultencoding()
+    except ValueError:  # system encoding is nonstandard or malformed
+        enc = None
+    if enc:
+        encodings.append(enc)
+
     encodings.extend(['utf-8', 'latin-1'])
     return encodings
 

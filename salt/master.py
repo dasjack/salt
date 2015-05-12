@@ -8,6 +8,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import ctypes
+from pprint import pformat
 import os
 import re
 import time
@@ -531,7 +532,23 @@ class Publisher(multiprocessing.Process):
                 try:
                     package = pull_sock.recv()
                     unpacked_package = salt.payload.unpackage(package)
-                    payload = unpacked_package['payload']
+                    try:
+                        payload = unpacked_package['payload']
+                    except (KeyError,) as exc:
+                        # somehow not packaged !?
+                        if 'enc' in payload and 'load' in payload:
+                            payload = package
+                        else:
+                            try:
+                                log.error(
+                                    "Invalid payload: {0}".format(
+                                        pformat(unpacked_package), exc_info=True))
+                            except Exception:
+                                # dont fail on a format error here !
+                                # but log something as it is hard to track down
+                                log.error("Received invalid payload", exc_info=True)
+                            raise exc
+
                     if self.opts['zmq_filtering']:
                         # if you have a specific topic list, use that
                         if 'topic_lst' in unpacked_package:
@@ -614,6 +631,9 @@ class ReqServer(object):
                 if exc.errno == errno.EINTR:
                     continue
                 raise exc
+            except KeyboardInterrupt:
+                log.warn('Stopping the Salt Master')
+                raise SystemExit('\nExiting on Ctrl-c')
 
     def __bind(self):
         '''
@@ -644,7 +664,11 @@ class ReqServer(object):
         '''
         Start up the ReqServer
         '''
-        self.__bind()
+        try:
+            self.__bind()
+        except KeyboardInterrupt:
+            log.warn('Stopping the Salt Master')
+            raise SystemExit('\nExiting on Ctrl-c')
 
     def destroy(self):
         if hasattr(self, 'clients') and self.clients.closed is False:
@@ -715,6 +739,13 @@ class MWorker(multiprocessing.Process):
                     raise
                 # catch all other exceptions, so we don't go defunct
                 except Exception as exc:
+                    # since we are in an exceptional state, lets attempt to tell
+                    # the minion we have a problem, otherwise the minion will get
+                    # no response and be forced to wait for their max timeout
+                    try:
+                        socket.send('Unexpected Error in Mworker')
+                    except:  # pylint: disable=W0702
+                        pass
                     # Properly handle EINTR from SIGUSR1
                     if isinstance(exc, zmq.ZMQError) and exc.errno == errno.EINTR:
                         continue
@@ -855,14 +886,14 @@ class AESFuncs(object):
         '''
         Set the local file objects from the file server interface
         '''
-        fs_ = salt.fileserver.Fileserver(self.opts)
-        self._serve_file = fs_.serve_file
-        self._file_hash = fs_.file_hash
-        self._file_list = fs_.file_list
-        self._file_list_emptydirs = fs_.file_list_emptydirs
-        self._dir_list = fs_.dir_list
-        self._symlink_list = fs_.symlink_list
-        self._file_envs = fs_.envs
+        self.fs_ = salt.fileserver.Fileserver(self.opts)
+        self._serve_file = self.fs_.serve_file
+        self._file_hash = self.fs_.file_hash
+        self._file_list = self.fs_.file_list
+        self._file_list_emptydirs = self.fs_.file_list_emptydirs
+        self._dir_list = self.fs_.dir_list
+        self._symlink_list = self.fs_.symlink_list
+        self._file_envs = self.fs_.envs
 
     def __verify_minion(self, id_, token):
         '''
@@ -1186,6 +1217,7 @@ class AESFuncs(object):
             ext=load.get('ext'),
             pillar=load.get('pillar_override', {}))
         data = pillar.compile_pillar(pillar_dirs=pillar_dirs)
+        self.fs_.update_opts()
         if self.opts.get('minion_data_cache', False):
             cdir = os.path.join(self.opts['cachedir'], 'minions', load['id'])
             if not os.path.isdir(cdir):
@@ -1250,9 +1282,18 @@ class AESFuncs(object):
         if any(key not in load for key in ('return', 'jid', 'id')):
             return None
         # if we have a load, save it
-        if 'load' in load:
+        if load.get('load'):
             fstr = '{0}.save_load'.format(self.opts['master_job_cache'])
-            self.mminion.returners[fstr](load['jid'], load)
+            self.mminion.returners[fstr](load['jid'], load['load'])
+
+        # Register the syndic
+        syndic_cache_path = os.path.join(self.opts['cachedir'], 'syndics', load['id'])
+        if not os.path.exists(syndic_cache_path):
+            path_name = os.path.split(syndic_cache_path)[0]
+            if not os.path.exists(path_name):
+                os.makedirs(path_name)
+            with salt.utils.fopen(syndic_cache_path, 'w') as f:
+                f.write('')
 
         # Format individual return loads
         for key, item in load['return'].items():
@@ -1261,6 +1302,10 @@ class AESFuncs(object):
                    'return': item}
             if 'master_id' in load:
                 ret['master_id'] = load['master_id']
+            if 'fun' in load:
+                ret['fun'] = load['fun']
+            if 'arg' in load:
+                ret['fun_args'] = load['arg']
             if 'out' in load:
                 ret['out'] = load['out']
             self._return(ret)
@@ -1585,7 +1630,7 @@ class ClearFuncs(object):
 
         elif os.path.isfile(pubfn):
             # The key has been accepted, check it
-            if salt.utils.fopen(pubfn, 'r').read() != load['pub']:
+            if salt.utils.fopen(pubfn, 'r').read().strip() != load['pub'].strip():
                 log.error(
                     'Authentication attempt from {id} failed, the public '
                     'keys did not match. This may be an attempt to compromise '
@@ -1866,6 +1911,7 @@ class ClearFuncs(object):
 
         Any return other than None is an eauth failure
         '''
+
         if 'eauth' not in clear_load:
             msg = ('Authentication failure of type "eauth" occurred for '
                    'user {0}.').format(clear_load.get('username', 'UNKNOWN'))
@@ -2054,6 +2100,7 @@ class ClearFuncs(object):
         Create and return an authentication token, the clear load needs to
         contain the eauth key and the needed authentication creds.
         '''
+
         if 'eauth' not in clear_load:
             log.warning('Authentication failure of type "eauth" occurred.')
             return ''
@@ -2063,10 +2110,19 @@ class ClearFuncs(object):
             return ''
         try:
             name = self.loadauth.load_name(clear_load)
+            groups = self.loadauth.get_groups(clear_load)
             if not ((name in self.opts['external_auth'][clear_load['eauth']]) |
                     ('*' in self.opts['external_auth'][clear_load['eauth']])):
-                log.warning('Authentication failure of type "eauth" occurred.')
-                return ''
+                found = False
+                for group in groups:
+                    if "{0}%".format(group) in self.opts['external_auth'][clear_load['eauth']]:
+                        found = True
+                        break
+                if not found:
+                    log.warning('Authentication failure of type "eauth" occurred.')
+                    return ''
+                else:
+                    clear_load['groups'] = groups
             if not self.loadauth.time_auth(clear_load):
                 log.warning('Authentication failure of type "eauth" occurred.')
                 return ''
@@ -2146,12 +2202,38 @@ class ClearFuncs(object):
                 return ''
             if not ((token['name'] in self.opts['external_auth'][token['eauth']]) |
                     ('*' in self.opts['external_auth'][token['eauth']])):
-                log.warning('Authentication failure of type "token" occurred.')
-                return ''
+                found = False
+                for group in token['groups']:
+                    if "{0}%".format(group) in self.opts['external_auth'][token['eauth']]:
+                        found = True
+                        break
+                if not found:
+                    log.warning('Authentication failure of type "token" occurred.')
+                    return ''
+
+            group_perm_keys = filter(lambda(item): item.endswith('%'), self.opts['external_auth'][token['eauth']])  # The configured auth groups
+
+            # First we need to know if the user is allowed to proceed via any of their group memberships.
+            group_auth_match = False
+            for group_config in group_perm_keys:
+                group_config = group_config.rstrip('%')
+                for group in token['groups']:
+                    if group == group_config:
+                        group_auth_match = True
+
+            auth_list = []
+
+            if '*' in self.opts['external_auth'][token['eauth']]:
+                auth_list.extend(self.opts['external_auth'][token['eauth']]['*'])
+            if token['name'] in self.opts['external_auth'][token['eauth']]:
+                auth_list.extend(self.opts['external_auth'][token['eauth']][token['name']])
+            if group_auth_match:
+                auth_list = self.ckminions.fill_auth_list_from_groups(self.opts['external_auth'][token['eauth']], token['groups'], auth_list)
+
+            log.trace("compiled auth_list: {0}".format(auth_list))
+
             good = self.ckminions.auth_check(
-                self.opts['external_auth'][token['eauth']][token['name']]
-                if token['name'] in self.opts['external_auth'][token['eauth']]
-                else self.opts['external_auth'][token['eauth']]['*'],
+                auth_list,
                 clear_load['fun'],
                 clear_load['tgt'],
                 clear_load.get('tgt_type', 'glob'))

@@ -287,7 +287,7 @@ import salt.utils
 # Only used when called from a terminal
 log = None
 if __name__ == '__main__':
-    import argparse
+    import argparse  # pylint: disable=minimum-python-version
 
     parser = argparse.ArgumentParser()
     parser.add_argument('hostname', help='Hostname')
@@ -455,11 +455,11 @@ def ext_pillar(minion_id, pillar, resource, sequence, subkey=False, subkey_only=
                             immutable[rkey] = True
                         if rkey not in output:
                             log.error('Cant\'t merge key {0} doesn\'t exist'.format(rkey))
-                        elif type(results[key]) != type(output[rkey]):
+                        elif not isinstance(results[key], type(output[rkey])):
                             log.error('Can\'t merge different types for key {0}'.format(rkey))
-                        elif type(results[key]) is dict:
+                        elif isinstance(results[key], dict):
                             output[rkey].update(results[key])
-                        elif type(results[key]) is list:
+                        elif isinstance(results[key], list):
                             output[rkey].extend(results[key])
                         else:
                             log.error('Unsupported type need to be list or dict for key {0}'.format(rkey))

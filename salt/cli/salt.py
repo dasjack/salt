@@ -5,6 +5,8 @@ from __future__ import absolute_import
 import os
 import sys
 
+import salt.utils.job
+from salt._compat import string_types
 from salt.utils import parsers, print_cli
 from salt.utils.verify import verify_files
 from salt.exceptions import (
@@ -53,7 +55,7 @@ class SaltCMD(parsers.SaltCMDOptionParser):
             self.exit(2, '{0}\n'.format(exc))
             return
 
-        if self.options.batch:
+        if self.options.batch or self.options.static:
             import salt.cli.batch
             eauth = {}
             if 'token' in self.config:
@@ -78,7 +80,10 @@ class SaltCMD(parsers.SaltCMDOptionParser):
 
             if self.options.static:
 
-                batch = salt.cli.batch.Batch(self.config, quiet=True)
+                if not self.options.batch:
+                    self.config['batch'] = '100%'
+
+                batch = salt.cli.batch.Batch(self.config, eauth=eauth, quiet=True)
 
                 ret = {}
 
@@ -88,10 +93,14 @@ class SaltCMD(parsers.SaltCMDOptionParser):
                 self._output_ret(ret, '')
 
             else:
-                batch = salt.cli.batch.Batch(self.config)
+                batch = salt.cli.batch.Batch(self.config, eauth=eauth)
                 # Printing the output is already taken care of in run() itself
                 for res in batch.run():
-                    pass
+                    if self.options.failhard:
+                        for ret in res.itervalues():
+                            retcode = salt.utils.job.get_retcode(ret)
+                            if retcode != 0:
+                                sys.exit(retcode)
 
         else:
             if self.options.timeout <= 0:
@@ -160,12 +169,7 @@ class SaltCMD(parsers.SaltCMDOptionParser):
                         kwargs['cli'] = True
                     else:
                         cmd_func = local.cmd_cli
-                    if self.options.static:
-                        if self.options.verbose:
-                            kwargs['verbose'] = True
-                        full_ret = local.cmd_full_return(**kwargs)
-                        ret, out, retcode = self._format_ret(full_ret)
-                        self._output_ret(ret, out)
+
                     if self.options.progress:
                         kwargs['progress'] = True
                         self.config['progress'] = True
@@ -233,7 +237,11 @@ class SaltCMD(parsers.SaltCMDOptionParser):
         not_return_counter = 0
         not_return_minions = []
         for each_minion in ret:
-            if ret[each_minion] == "Minion did not return":
+            minion_ret = ret[each_minion].get('ret')
+            if (
+                    isinstance(minion_ret, string_types)
+                    and minion_ret.startswith("Minion did not return")
+            ):
                 not_return_counter += 1
                 not_return_minions.append(each_minion)
             else:
@@ -288,8 +296,9 @@ class SaltCMD(parsers.SaltCMDOptionParser):
             ret[key] = data['ret']
             if 'out' in data:
                 out = data['out']
-            if 'retcode' in data:
-                retcode = data['retcode']
+            ret_retcode = salt.utils.job.get_retcode(data)
+            if ret_retcode > retcode:
+                retcode = ret_retcode
         return ret, out, retcode
 
     def _format_error(self, minion_error):

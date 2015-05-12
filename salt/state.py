@@ -69,6 +69,7 @@ STATE_RUNTIME_KEYWORDS = frozenset([
     'check_cmd',
     'fail_hard',
     'onlyif',
+    'unless',
     'order',
     'reload_modules',
     'reload_grains',
@@ -650,7 +651,7 @@ class State(object):
             else:
                 low_data_onlyif = low_data['onlyif']
             for entry in low_data_onlyif:
-                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd != 0 and ret['result'] is False:
                     ret.update({'comment': 'onlyif execution failed',
@@ -667,7 +668,7 @@ class State(object):
             else:
                 low_data_unless = low_data['unless']
             for entry in low_data_unless:
-                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+                cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
                 log.debug('Last command return code: {0}'.format(cmd))
                 if cmd == 0 and ret['result'] is False:
                     ret.update({'comment': 'unless execution succeeded',
@@ -689,7 +690,7 @@ class State(object):
         if 'shell' in self.opts['grains']:
             cmd_opts['shell'] = self.opts['grains'].get('shell')
         for entry in low_data['check_cmd']:
-            cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, **cmd_opts)
+            cmd = self.functions['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_opts)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0 and ret['result'] is False:
                 ret.update({'comment': 'check_cmd determined the state succeeded', 'result': True})
@@ -1683,14 +1684,15 @@ class State(object):
                         req_val = req[req_key]
                         if req_val is None:
                             continue
+                        if req_key == 'sls':
+                            # Allow requisite tracking of entire sls files
+                            if fnmatch.fnmatch(chunk['__sls__'], req_val):
+                                found = True
+                                reqs[r_state].append(chunk)
+                            continue
                         if (fnmatch.fnmatch(chunk['name'], req_val) or
                             fnmatch.fnmatch(chunk['__id__'], req_val)):
                             if chunk['state'] == req_key:
-                                found = True
-                                reqs[r_state].append(chunk)
-                        elif req_key == 'sls':
-                            # Allow requisite tracking of entire sls files
-                            if fnmatch.fnmatch(chunk['__sls__'], req_val):
                                 found = True
                                 reqs[r_state].append(chunk)
                     if not found:
@@ -1792,6 +1794,14 @@ class State(object):
                         req_val = req[req_key]
                         if req_val is None:
                             continue
+                        if req_key == 'sls':
+                            # Allow requisite tracking of entire sls files
+                            if fnmatch.fnmatch(chunk['__sls__'], req_val):
+                                if requisite == 'prereq':
+                                    chunk['__prereq__'] = True
+                                reqs.append(chunk)
+                                found = True
+                            continue
                         if (fnmatch.fnmatch(chunk['name'], req_val) or
                             fnmatch.fnmatch(chunk['__id__'], req_val)):
                             if chunk['state'] == req_key:
@@ -1799,13 +1809,6 @@ class State(object):
                                     chunk['__prereq__'] = True
                                 elif requisite == 'prerequired':
                                     chunk['__prerequired__'] = True
-                                reqs.append(chunk)
-                                found = True
-                        elif req_key == 'sls':
-                            # Allow requisite tracking of entire sls files
-                            if fnmatch.fnmatch(chunk['__sls__'], req_val):
-                                if requisite == 'prereq':
-                                    chunk['__prereq__'] = True
                                 reqs.append(chunk)
                                 found = True
                     if not found:
@@ -1886,7 +1889,7 @@ class State(object):
             else:
                 # determine what the requisite failures where, and return
                 # a nice error message
-                comment_dict = {}
+                failed_requisites = set()
                 # look at all requisite types for a failure
                 for req_type, req_lows in reqs.iteritems():
                     for req_low in req_lows:
@@ -1901,13 +1904,18 @@ class State(object):
                             # use SLS.ID for the key-- so its easier to find
                             key = '{sls}.{_id}'.format(sls=req_low['__sls__'],
                                                        _id=req_low['__id__'])
-                            comment_dict[key] = req_ret['comment']
+                            failed_requisites.add(key)
 
-                running[tag] = {'changes': {},
-                                'result': False,
-                                'comment': 'One or more requisite failed: {0}'.format(comment_dict),
-                                '__run_num__': self.__run_num,
-                                '__sls__': low['__sls__']}
+                _cmt = 'One or more requisite failed: {0}'.format(
+                    ', '.join(str(i) for i in failed_requisites)
+                )
+                running[tag] = {
+                    'changes': {},
+                    'result': False,
+                    'comment': _cmt,
+                    '__run_num__': self.__run_num,
+                    '__sls__': low['__sls__']
+                }
             self.__run_num += 1
         elif status == 'change' and not low.get('__prereq__'):
             ret = self.call(low, chunks, running)
@@ -2257,7 +2265,7 @@ class BaseHighState(object):
         envs = set(['base'])
         if 'file_roots' in self.opts:
             envs.update(list(self.opts['file_roots']))
-        return envs
+        return envs.union(set(self.client.envs()))
 
     def get_tops(self):
         '''
@@ -2276,7 +2284,7 @@ class BaseHighState(object):
                             ),
                         self.state.rend,
                         self.state.opts['renderer'],
-                        env=self.opts['environment']
+                        saltenv=self.opts['environment']
                         )
                     ]
         else:
@@ -2480,7 +2488,6 @@ class BaseHighState(object):
         '''
         Render a state file and retrieve all of the include states
         '''
-        err = ''
         errors = []
         if not local:
             state_data = self.client.get_state(sls, saltenv)
@@ -2495,7 +2502,8 @@ class BaseHighState(object):
         if not fn_:
             errors.append(
                 'Specified SLS {0} in saltenv {1} is not '
-                'available on the salt master'.format(sls, saltenv)
+                'available on the salt master or through a configured '
+                'fileserver'.format(sls, saltenv)
             )
         state = None
         try:
@@ -3015,7 +3023,8 @@ class HighState(BaseHighState):
     stack = []
 
     def __init__(self, opts, pillar=None, jid=None):
-        self.client = salt.fileclient.get_file_client(opts)
+        self.opts = opts
+        self.client = salt.fileclient.get_file_client(self.opts)
         BaseHighState.__init__(self, opts)
         self.state = State(self.opts, pillar, jid)
         self.matcher = salt.minion.Matcher(self.opts)

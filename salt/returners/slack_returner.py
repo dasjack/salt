@@ -2,7 +2,7 @@
 '''
 Return salt data via slack
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 The following fields can be set in the minion conf file::
 
@@ -43,13 +43,15 @@ Hipchat settings may also be configured as::
         profile: slack_profile
         channel: RoomName
 
-  To use the HipChat returner, append '--return slack' to the salt command. ex:
+To use the HipChat returner, append '--return slack' to the salt command.
 
-  .. code-block:: bash
+.. code-block:: bash
 
     salt '*' test.ping --return slack
 
-  To use the alternative configuration, append '--return_config alternative' to the salt command. ex:
+To use the alternative configuration, append '--return_config alternative' to the salt command.
+
+.. code-block:: bash
 
     salt '*' test.ping --return slack --return_config alternative
 '''

@@ -8,6 +8,7 @@ Module for managing the Salt schedule on a minion
 from __future__ import absolute_import
 
 # Import Python libs
+import copy as pycopy
 import difflib
 import os
 import yaml
@@ -33,6 +34,8 @@ SCHEDULE_CONF = [
         'splay',
         'range',
         'when',
+        'once',
+        'once_fmt',
         'returner',
         'jid_include',
         'args',
@@ -76,9 +79,10 @@ def list_(show_all=False, return_yaml=True):
             del schedule[job]
             continue
 
-        for item in schedule[job]:
+        for item in pycopy.copy(schedule[job]):
             if item not in SCHEDULE_CONF:
                 del schedule[job][item]
+                continue
             if schedule[job][item] == 'true':
                 schedule[job][item] = True
             if schedule[job][item] == 'false':
@@ -258,7 +262,8 @@ def build_schedule_item(name, **kwargs):
         else:
             schedule[name]['splay'] = kwargs['splay']
 
-    for item in ['range', 'when', 'cron', 'returner', 'return_config']:
+    for item in ['range', 'when', 'once', 'once_fmt', 'cron', 'returner',
+            'return_config']:
         if item in kwargs:
             schedule[name][item] = kwargs[item]
 

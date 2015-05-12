@@ -221,7 +221,7 @@ def _find_install_targets(name=None,
     # Get the ignore_types list if any from the pkg_verify argument
     if isinstance(pkg_verify, list) and any(x.get('ignore_types') is not None
                                         for x in pkg_verify
-                                        if type(x) is _OrderedDict
+                                        if isinstance(x, _OrderedDict)
                                         and 'ignore_types' in x):
         ignore_types = next(x.get('ignore_types')
                             for x in pkg_verify
@@ -774,7 +774,7 @@ def installed(
         Whether to install the packages marked as recommended.  Default is True.
         Currently only works with APT based systems.
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     .. code-block:: yaml
 
@@ -786,7 +786,7 @@ def installed(
         Only upgrade the packages, if they are already installed. Default is False.
         Currently only works with APT based systems.
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     .. code-block:: yaml
 
@@ -1187,7 +1187,7 @@ def latest(
         Whether to install the packages marked as recommended.  Default is True.
         Currently only works with APT based systems.
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     .. code-block:: yaml
 
@@ -1199,7 +1199,7 @@ def latest(
         Only upgrade the packages, if they are already installed. Default is False.
         Currently only works with APT based systems.
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     .. code-block:: yaml
 
@@ -1551,7 +1551,7 @@ def purged(name, version=None, pkgs=None, **kwargs):
                 'comment': str(exc)}
 
 
-def uptodate(name, refresh=False):
+def uptodate(name, refresh=False, **kwargs):
     '''
     .. versionadded:: 2014.7.0
 
@@ -1563,6 +1563,11 @@ def uptodate(name, refresh=False):
 
     refresh
         refresh the package database before checking for new upgrades
+
+    kwargs
+        Any keyword arguments to pass through to ``pkg.upgrade``.
+
+        .. versionadded:: 2015.5.0
     '''
     ret = {'name': name,
            'changes': {},
@@ -1592,7 +1597,7 @@ def uptodate(name, refresh=False):
         ret['result'] = None
         return ret
 
-    updated = __salt__['pkg.upgrade'](refresh=refresh)
+    updated = __salt__['pkg.upgrade'](refresh=refresh, **kwargs)
 
     if updated.get('result') is False:
         ret.update(updated)

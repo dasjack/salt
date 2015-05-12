@@ -134,13 +134,24 @@ def mounted(name,
                 real_device = _real_device
             else:
                 # Remote file systems act differently.
-                opts = list(set(opts + active[_device]['opts'] + active[_device]['superopts']))
-                active[real_name]['opts'].append('bind')
+                if _device in active:
+                    opts = list(set(opts + active[_device]['opts'] + active[_device]['superopts']))
+                    active[real_name]['opts'].append('bind')
                 real_device = active[real_name]['device']
         else:
             real_device = os.path.realpath(device)
     elif device.upper().startswith('UUID='):
         real_device = device.split('=')[1].strip('"').lower()
+    elif device.upper().startswith('LABEL='):
+        _label = device.split('=')[1]
+        cmd = 'blkid -L {0}'.format(_label)
+        res = __salt__['cmd.run_all']('{0}'.format(cmd))
+        if res['retcode'] > 0:
+            ret['comment'] = 'Unable to find device with label {0}.'.format(_label)
+            ret['result'] = False
+            return ret
+        else:
+            real_device = res['stdout']
     else:
         real_device = device
 
@@ -205,6 +216,10 @@ def mounted(name,
                     'soft',
                     'auto',
                     'users',
+                    'bind',
+                    'nonempty',
+                    'transform_symlinks',
+                    'port',
                 ]
                 # options which are provided as key=value (e.g. password=Zohp5ohb)
                 mount_invisible_keys = [
@@ -212,6 +227,7 @@ def mounted(name,
                     'comment',
                     'password',
                     'retry',
+                    'port',
                 ]
                 # Some filesystems have options which should not force a remount.
                 mount_ignore_fs_keys = {
@@ -243,9 +259,9 @@ def mounted(name,
                             ret['comment'] = "Remount would be forced because options ({0}) changed".format(opt)
                             return ret
                         else:
-                            # nfs requires umounting and mounting if options change
+                            # Some file systems require umounting and mounting if options change
                             # add others to list that require similiar functionality
-                            if fstype in ['nfs']:
+                            if fstype in ['nfs', 'cvfs'] or fstype.startswith('fuse'):
                                 ret['changes']['umount'] = "Forced unmount and mount because " \
                                                             + "options ({0}) changed".format(opt)
                                 unmount_result = __salt__['mount.umount'](real_name)
@@ -504,7 +520,7 @@ def unmounted(name,
     name
         The path to the location where the device is to be unmounted from
 
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     device
         The device to be unmounted.

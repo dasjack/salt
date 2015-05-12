@@ -187,7 +187,7 @@ def low(data, queue=False, **kwargs):
     return ret
 
 
-def high(data, queue=False, **kwargs):
+def high(data, test=False, queue=False, **kwargs):
     '''
     Execute the compound calls stored in a single set of high data
     This function is mostly intended for testing the state system
@@ -201,7 +201,21 @@ def high(data, queue=False, **kwargs):
     conflict = _check_queue(queue, kwargs)
     if conflict is not None:
         return conflict
-    st_ = salt.state.State(__opts__)
+    opts = _get_opts(kwargs.get('localconfig'))
+
+    if salt.utils.test_mode(test=test, **kwargs):
+        opts['test'] = True
+    elif test is not None:
+        opts['test'] = test
+    else:
+        opts['test'] = __opts__.get('test', None)
+
+    pillar = kwargs.get('pillar')
+    if pillar is not None and not isinstance(pillar, dict):
+        raise SaltInvocationError(
+            'Pillar data must be formatted as a dictionary'
+        )
+    st_ = salt.state.State(__opts__, pillar)
     ret = st_.call_high(data)
     _set_retcode(ret)
     return ret
@@ -257,7 +271,7 @@ def template_str(tem, queue=False, **kwargs):
 def apply_(mods=None,
           **kwargs):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Apply states! This function will call highstate or state.sls based on the
     arguments passed in, state.apply is intended to be the main gateway for
@@ -279,7 +293,7 @@ def apply_(mods=None,
 def request(mods=None,
             **kwargs):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Request that the local admin execute a state run via
     `salt-call state.run_request`
@@ -320,7 +334,7 @@ def request(mods=None,
 
 def check_request(name=None):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Return the state request information, if any
 
@@ -343,7 +357,7 @@ def check_request(name=None):
 
 def clear_request(name=None):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Clear out the state execution request without executing it
 
@@ -384,7 +398,7 @@ def clear_request(name=None):
 
 def run_request(name='default', **kwargs):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Execute the pending state request
 

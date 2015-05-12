@@ -7,8 +7,11 @@ A REST API for Salt
 
 .. py:currentmodule:: salt.netapi.rest_cherrypy.app
 
-:depends:   - CherryPy Python module (strongly recommend 3.2.x versions due to
-    an as yet unknown SSL error).
+:depends:   - CherryPy Python module. Versions 3.2.{2,3,4} are strongly
+    recommended due to a known `SSL error
+    <https://bitbucket.org/cherrypy/cherrypy/issue/1298/ssl-not-working>`_
+    introduced in version 3.2.5. The issue was reportedly resolved with
+    CherryPy milestone 3.3, but the patch was committed for version 3.6.1.
 :optdepends:    - ws4py Python module for websockets support.
 :configuration: All authentication is done through Salt's :ref:`external auth
     <acl-eauth>` system which requires additional configuration not described
@@ -271,6 +274,41 @@ except ImportError:
     HAS_WEBSOCKETS = False
 
 
+def html_override_tool():
+    '''
+    Bypass the normal handler and serve HTML for all URLs
+
+    The ``app_path`` setting must be non-empty and the request must ask for
+    ``text/html`` in the ``Accept`` header.
+    '''
+    apiopts = cherrypy.config['apiopts']
+    request = cherrypy.request
+
+    url_blacklist = (
+        apiopts.get('app_path', '/app'),
+        apiopts.get('static_path', '/static'),
+    )
+
+    if 'app' not in cherrypy.config['apiopts']:
+        return
+
+    if request.path_info.startswith(url_blacklist):
+        return
+
+    if request.headers.get('Accept') == '*/*':
+        return
+
+    try:
+        wants_html = cherrypy.lib.cptools.accept('text/html')
+    except cherrypy.HTTPError:
+        return
+    else:
+        if wants_html != 'text/html':
+            return
+
+    raise cherrypy.InternalRedirect(apiopts.get('app_path', '/app'))
+
+
 def salt_token_tool():
     '''
     If the custom authentication header is supplied, put it in the cookie dict
@@ -391,6 +429,9 @@ def hypermedia_handler(*args, **kwargs):
     except (salt.exceptions.EauthAuthenticationError,
             salt.exceptions.TokenAuthenticationError):
         raise cherrypy.HTTPError(401)
+    except (salt.exceptions.SaltDaemonNotRunning,
+            salt.exceptions.SaltReqTimeoutError) as exc:
+        raise cherrypy.HTTPError(503, exc.strerror)
     except cherrypy.CherryPyException:
         raise
     except Exception as exc:
@@ -571,6 +612,8 @@ def lowdata_fmt():
         cherrypy.serving.request.lowstate = data
 
 
+cherrypy.tools.html_override = cherrypy.Tool('on_start_resource',
+        html_override_tool, priority=53)
 cherrypy.tools.salt_token = cherrypy.Tool('on_start_resource',
         salt_token_tool, priority=55)
 cherrypy.tools.salt_auth = cherrypy.Tool('before_request_body',
@@ -1358,6 +1401,10 @@ class Login(LowDataAdapter):
                 ]
             }}
         '''
+        if not self.api._is_master_running():
+            raise salt.exceptions.SaltDaemonNotRunning(
+                'Salt Master is not available.')
+
         # the urlencoded_processor will wrap this in a list
         if isinstance(cherrypy.serving.request.lowstate, list):
             creds = cherrypy.serving.request.lowstate[0]
@@ -1376,7 +1423,18 @@ class Login(LowDataAdapter):
         # Grab eauth config for the current backend for the current user
         try:
             eauth = self.opts.get('external_auth', {}).get(token['eauth'], {})
-            perms = eauth.get(token['name'], eauth.get('*'))
+
+            if 'groups' in token:
+                user_groups = set(token['groups'])
+                eauth_groups = set([i.rstrip('%') for i in eauth.keys() if i.endswith('%')])
+
+                perms = []
+                for group in user_groups & eauth_groups:
+                    perms.extend(eauth['{0}%'.format(group)])
+
+                perms = perms or None
+            else:
+                perms = eauth.get(token['name'], eauth.get('*'))
 
             if perms is None:
                 raise ValueError("Eauth permission list not found.")
@@ -2209,9 +2267,16 @@ class API(object):
 
                 'tools.cpstats.on': self.apiopts.get('collect_stats', False),
 
+                'tools.html_override.on': True,
                 'tools.cors_tool.on': True,
             },
         }
+
+        if 'favicon' in self.apiopts:
+            conf['/favicon.ico'] = {
+                'tools.staticfile.on': True,
+                'tools.staticfile.filename': self.apiopts['favicon'],
+            }
 
         if self.apiopts.get('debug', False) is False:
             conf['global']['environment'] = 'production'

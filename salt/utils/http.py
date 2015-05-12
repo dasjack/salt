@@ -2,6 +2,8 @@
 '''
 Utils for making various web calls. Primarily designed for REST, SOAP, webhooks
 and the like, but also useful for basic HTTP testing.
+
+.. versionaddedd:: 2015.2
 '''
 from __future__ import absolute_import
 
@@ -10,7 +12,10 @@ import pprint
 import os.path
 import json
 import logging
-import salt.ext.six.moves.http_cookiejar  # pylint: disable=E0611
+# pylint: disable=no-name-in-module
+import salt.ext.six.moves.http_cookiejar
+import salt.ext.six.moves.urllib.request as urllib_request
+# pylint: enable=no-name-in-module
 from salt.ext.six import string_types
 from salt._compat import ElementTree as ET
 
@@ -32,8 +37,6 @@ except ImportError:
         except ImportError:
             HAS_MATCHHOSTNAME = False
 import socket
-import urllib2
-import httplib
 
 # Import salt libs
 import salt.utils
@@ -43,6 +46,7 @@ import salt.config
 import salt.version
 from salt.template import compile_template
 from salt import syspaths
+import salt.ext.six.moves.http_client  # pylint: disable=no-name-in-module
 
 # Import 3rd party libs
 try:
@@ -56,6 +60,12 @@ try:
     HAS_MSGPACK = True
 except ImportError:
     HAS_MSGPACK = False
+
+try:
+    import certifi
+    HAS_CERTIFI = True
+except ImportError:
+    HAS_CERTIFI = False
 
 log = logging.getLogger(__name__)
 JARFILE = os.path.join(syspaths.CACHE_DIR, 'cookies.txt')
@@ -73,6 +83,7 @@ def query(url,
           header_file=None,
           username=None,
           password=None,
+          auth=None,
           decode=False,
           decode_type='auto',
           status=False,
@@ -115,7 +126,7 @@ def query(url,
                 os.path.join(syspaths.CONFIG_DIR, 'master')
             )
         elif node == 'minion':
-            opts = salt.config.master_config(
+            opts = salt.config.minion_config(
                 os.path.join(syspaths.CONFIG_DIR, 'minion')
             )
         else:
@@ -232,12 +243,6 @@ def query(url,
             else:
                 req_kwargs['stream'] = True
 
-        result = sess.request(
-            method, url, params=params, data=data, **req_kwargs
-        )
-        if stream is True or handle is True:
-            return {'handle': result}
-
         # Client-side cert handling
         if cert is not None:
             if isinstance(cert, string_types):
@@ -250,15 +255,22 @@ def query(url,
                 log.error('The client-side certificate path that was passed is '
                           'not valid: {0}'.format(cert))
 
+        result = sess.request(
+            method, url, params=params, data=data, **req_kwargs
+        )
+        result.raise_for_status()
+        if stream is True or handle is True:
+            return {'handle': result}
+
         result_status_code = result.status_code
         result_headers = result.headers
         result_text = result.text
         result_cookies = result.cookies
     else:
-        request = urllib2.Request(url, data)
+        request = urllib_request.Request(url, data)
         handlers = [
-            urllib2.HTTPHandler,
-            urllib2.HTTPCookieProcessor(sess_cookies)
+            urllib_request.HTTPHandler,
+            urllib_request.HTTPCookieProcessor(sess_cookies)
         ]
 
         if url.startswith('https') or port == 443:
@@ -304,19 +316,19 @@ def query(url,
                     if hasattr(ssl, 'SSLContext'):
                         # Python >= 2.7.9
                         context = ssl.SSLContext.load_cert_chain(*cert_chain)
-                        handlers.append(urllib2.HTTPSHandler(context=context))  # pylint: disable=E1123
+                        handlers.append(urllib_request.HTTPSHandler(context=context))  # pylint: disable=E1123
                     else:
                         # Python < 2.7.9
                         cert_kwargs = {
                             'host': request.get_host(),
                             'port': port,
-                            'cert_file': cert[0]
+                            'cert_file': cert_chain[0]
                         }
-                        if len(cert) > 1:
-                            cert_kwargs['key_file'] = cert[1]
-                        handlers[0] = httplib.HTTPSConnection(**cert_kwargs)
+                        if len(cert_chain) > 1:
+                            cert_kwargs['key_file'] = cert_chain[1]
+                        handlers[0] = salt.ext.six.moves.http_client.HTTPSConnection(**cert_kwargs)
 
-        opener = urllib2.build_opener(*handlers)
+        opener = urllib_request.build_opener(*handlers)
         for header in header_dict:
             request.add_header(header, header_dict[header])
         request.get_method = lambda: method
@@ -404,7 +416,7 @@ def query(url,
         else:
             text = True
 
-        if os.path.exists(decode_out):
+        if decode_out and os.path.exists(decode_out):
             with salt.utils.fopen(decode_out, 'w') as dof:
                 dof.write(result_text)
 
@@ -451,6 +463,9 @@ def get_ca_bundle(opts=None):
     ):
         if os.path.exists(path):
             return path
+
+    if salt.utils.is_windows() and HAS_CERTIFI:
+        return certifi.where()
 
     return None
 

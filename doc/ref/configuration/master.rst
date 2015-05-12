@@ -224,6 +224,21 @@ each of Salt's module types such as "runners", "output", "wheel", "modules",
 
     extension_modules: srv/modules
 
+.. conf_minion:: module_dirs
+
+``module_dirs``
+---------------
+
+Default: ``[]``
+
+Like ``extension_modules``, but a list of extra directories to search
+for Salt modules.
+
+.. code-block:: yaml
+
+    module_dirs:
+      - /var/cache/salt/minion/extmods
+
 .. conf_master:: cachedir
 
 ``cachedir``
@@ -374,6 +389,27 @@ local job cache on the master.
 
     ext_job_cache: redis
 
+.. conf_master:: event_return
+
+``event_return``
+-----------------
+
+.. versionadded:: 2015.5.0
+
+Default: ``''``
+
+Specify the returner to use to log events. A returner may have installation and
+configuration requirements. Read the returner's documentation.
+
+.. note:: 
+
+   Not all returners support event returns. Verify that a returner has an 
+   ``event_return()`` function before configuring this option with a returner.
+
+.. code-block:: yaml
+
+    event_return: cassandra_cql
+
 .. conf_master:: master_job_cache
 
 ``master_job_cache``
@@ -455,6 +491,10 @@ that connect to a master via localhost.
 
     presence_events: False
 
+
+Salt-SSH Configuration
+======================
+
 .. conf_master:: roster_file
 
 ``roster_file``
@@ -467,6 +507,23 @@ Pass in an alternative location for the salt-ssh roster file.
 .. code-block:: yaml
 
     roster_file: /root/roster
+
+.. conf_master:: ssh_minion_opts
+
+``ssh_minion_opts``
+-------------------
+
+Default: None
+
+Pass in minion option overrides that will be inserted into the SHIM for
+salt-ssh calls. The local minion config is not used for salt-ssh. Can be
+overridden on a per-minion basis in the roster (``minion_opts``)
+
+.. code-block:: yaml
+
+    minion_opts:
+      gpg_keydir: /root/gpg
+
 
 Master Security Settings
 ========================
@@ -1048,6 +1105,8 @@ Walkthrough <gitfs-per-remote-config>`.
 
 Specify the provider to be used for gitfs. More information can be found in the
 :ref:`GitFS Walkthrough <gitfs-dependencies>`.
+
+Specify one value among valid values: ``gitpython``, ``pygit2``, ``dulwich``
 
 .. _pygit2: https://github.com/libgit2/pygit2
 .. _GitPython: https://github.com/gitpython-developers/GitPython
@@ -1832,7 +1891,7 @@ There are additional details at :ref:`salt-pillars`
 ``ext_pillar_first``
 --------------------
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 The ext_pillar_first option allows for external pillar sources to populate
 before file system pillar. This allows for targeting file system pillar from
@@ -1854,7 +1913,7 @@ Default: ``False``
 Default: ``smart``
 
 The pillar_source_merging_strategy option allows you to configure merging
-strategy between different sources. It accepts 3 values:
+strategy between different sources. It accepts 4 values:
 
 * recurse:
 
@@ -1920,37 +1979,37 @@ strategy between different sources. It accepts 3 values:
 
 * overwrite:
 
-    Will use the behaviour of the 2014.1 branch and earlier.
+  Will use the behaviour of the 2014.1 branch and earlier.
 
-    Overwrites elements according the order in which they are processed.
+  Overwrites elements according the order in which they are processed.
 
-    First pillar processed:
+  First pillar processed:
 
-    .. code-block:: yaml
+  .. code-block:: yaml
 
-        A:
-          first_key: blah
-          second_key: blah
+      A:
+        first_key: blah
+        second_key: blah
 
-    Second pillar processed:
+  Second pillar processed:
 
-    .. code-block:: yaml
+  .. code-block:: yaml
 
-        A:
-          third_key: blah
-          fourth_key: blah
+      A:
+        third_key: blah
+        fourth_key: blah
 
-    will be merged as:
+  will be merged as:
 
-    .. code-block:: yaml
+  .. code-block:: yaml
 
-        A:
-          third_key: blah
-          fourth_key: blah
+      A:
+        third_key: blah
+        fourth_key: blah
 
 * smart (default):
 
-    Guesses the best strategy based on the "renderer" setting.
+  Guesses the best strategy based on the "renderer" setting.
 
 
 Syndic Server Settings
@@ -2263,6 +2322,9 @@ A group consists of a group name and a compound target.
     nodegroups:
       group1: 'L@foo.domain.com,bar.domain.com,baz.domain.com or bl*.domain.com'
       group2: 'G@os:Debian and foo.domain.com'
+      group3: 'G@os:Debian and N@group1'
+
+More information on using nodegroups can be found :ref:`here <targeting-nodegroups>`.
 
 
 Range Cluster Settings

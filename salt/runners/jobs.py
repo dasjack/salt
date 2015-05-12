@@ -10,6 +10,7 @@ from __future__ import absolute_import
 # Import python libs
 import fnmatch
 import os
+import copy
 
 # Import salt libs
 import salt.client
@@ -99,7 +100,7 @@ def lookup_jid(jid,
     display_progress
         Displays progress events when set to `True`. Default: `False`.
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     CLI Example:
 
@@ -127,8 +128,9 @@ def lookup_jid(jid,
         else:
             ret[minion] = data[minion].get('return')
     if missing:
+        load = mminion.returners['{0}.get_load'.format(returner)](jid)
         ckminions = salt.utils.minions.CkMinions(__opts__)
-        exp = ckminions.check_minions(data['tgt'], data['tgt_type'])
+        exp = ckminions.check_minions(load['tgt'], load['tgt_type'])
         for minion_id in exp:
             if minion_id not in data:
                 ret[minion_id] = 'Minion did not return'
@@ -206,10 +208,7 @@ def list_jobs(ext_source=None,
         __jid_event__.fire_event({'message': 'Querying returner {0} for jobs.'.format(returner)}, 'progress')
     mminion = salt.minion.MasterMinion(__opts__)
 
-    try:
-        ret = mminion.returners['{0}.get_jids'.format(returner)]()
-    except TypeError:
-        return 'Error: Requested returner could not be loaded. No jobs could be retrieved.'
+    ret = mminion.returners['{0}.get_jids'.format(returner)]()
 
     if search_metadata:
         mret = {}
@@ -224,7 +223,7 @@ def list_jobs(ext_source=None,
                     log.info('The search_metadata parameter must be specified'
                              ' as a dictionary.  Ignoring.')
     else:
-        mret = ret.copy()
+        mret = copy.copy(ret)
 
     if search_target:
         _mret = {}

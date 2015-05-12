@@ -85,6 +85,18 @@ localtime.
             - Thursday 3:00pm
             - Friday 5:00pm
 
+This will schedule a job to run once on the specified date. The default date
+format is ISO 8601 but can be overridden by also specifying the ``once_fmt``
+option.
+
+.. code-block:: yaml
+
+    schedule:
+      job1:
+        function: test.ping
+        once: 2015-04-22T20:21:00
+        once_fmt: '%Y-%m-%dT%H:%M:%S'
+
 This will schedule the command: state.sls httpd test=True at 5pm on Monday,
 Wednesday and Friday, and 3pm on Tuesday and Thursday.
 
@@ -133,7 +145,7 @@ the scheduled job when the minion starts up.  Sometimes this is not the desired
 situation.  Using the 'run_on_start' parameter set to False will cause the
 scheduler to skip this first run and wait until the next scheduled run.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
 .. code-block:: yaml
 
@@ -183,7 +195,7 @@ master.  Because of this information for these jobs will not be listed in the
 ``return_job`` parameter will return the data back to the Salt master, making
 the job available in this list.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
     schedule:
       job1:
@@ -197,7 +209,7 @@ but can be used to search for specific jobs later if combined with the
 return_job parameter.  The metadata parameter must be specified as a
 dictionary, othewise it will be ignored.
 
-.. versionadded:: 2015.2.0
+.. versionadded:: 2015.5.0
 
     schedule:
       job1:
@@ -212,6 +224,7 @@ from __future__ import absolute_import
 import os
 import time
 import datetime
+import itertools
 import multiprocessing
 import threading
 import sys
@@ -284,7 +297,7 @@ class Schedule(object):
                 'minion.d',
                 '_schedule.conf')
         try:
-            with salt.utils.fopen(schedule_conf, 'w+') as fp_:
+            with salt.utils.fopen(schedule_conf, 'wb+') as fp_:
                 fp_.write(yaml.dump({'schedule': self.opts['schedule']}))
         except (IOError, OSError):
             log.error('Failed to persist the updated schedule')
@@ -469,7 +482,12 @@ class Schedule(object):
             jobcount = 0
             for basefilename in os.listdir(salt.minion.get_proc_dir(self.opts['cachedir'])):
                 fn_ = os.path.join(salt.minion.get_proc_dir(self.opts['cachedir']), basefilename)
-                with salt.utils.fopen(fn_, 'r') as fp_:
+                if not os.path.exists(fn_):
+                    log.debug('schedule.handle_func: {0} was processed '
+                              'in another thread, skipping.'.format(
+                                  basefilename))
+                    continue
+                with salt.utils.fopen(fn_, 'rb') as fp_:
                     job = salt.payload.Serial(self.opts).load(fp_)
                     if job:
                         if 'schedule' in job:
@@ -502,7 +520,7 @@ class Schedule(object):
             log.debug('schedule.handle_func: adding this job to the jobcache '
                       'with data {0}'.format(ret))
             # write this to /var/cache/salt/minion/proc
-            with salt.utils.fopen(proc_fn, 'w+') as fp_:
+            with salt.utils.fopen(proc_fn, 'wb+') as fp_:
                 fp_.write(salt.payload.Serial(self.opts).dumps(ret))
 
         args = tuple()
@@ -615,32 +633,55 @@ class Schedule(object):
             seconds = 0
             cron = 0
             now = int(time.time())
-            time_conflict = False
 
-            for item in ['seconds', 'minutes', 'hours', 'days']:
-                if item in data and 'when' in data:
-                    time_conflict = True
-                if item in data and 'cron' in data:
-                    time_conflict = True
+            # Used for quick lookups when detecting invalid option combinations.
+            schedule_keys = set(data.keys())
 
-            if time_conflict:
-                log.error('Unable to use "seconds", "minutes",'
-                          '"hours", or "days" with '
-                          '"when" or "cron" options. Ignoring.')
+            time_elements = ('seconds', 'minutes', 'hours', 'days')
+            scheduling_elements = ('when', 'cron', 'once')
+
+            invalid_sched_combos = [set(i)
+                    for i in itertools.combinations(scheduling_elements, 2)]
+
+            if any(i <= schedule_keys for i in invalid_sched_combos):
+                log.error('Unable to use "{0}" options together. Ignoring.'
+                        .format('", "'.join(scheduling_elements)))
                 continue
 
-            if 'when' in data and 'cron' in data:
-                log.error('Unable to use "when" and "cron" options together.'
-                          'Ignoring.')
+            invalid_time_combos = []
+            for item in scheduling_elements:
+                all_items = itertools.chain([item], time_elements)
+                invalid_time_combos.append(
+                    set(itertools.combinations(all_items, 2)))
+
+            if any(set(x) <= schedule_keys for x in invalid_time_combos):
+                log.error('Unable to use "{0}" with "{1}" options. Ignoring'
+                        .format('", "'.join(time_elements),
+                            '", "'.join(scheduling_elements)))
                 continue
 
-            time_elements = ['seconds', 'minutes', 'hours', 'days']
             if True in [True for item in time_elements if item in data]:
                 # Add up how many seconds between now and then
                 seconds += int(data.get('seconds', 0))
                 seconds += int(data.get('minutes', 0)) * 60
                 seconds += int(data.get('hours', 0)) * 3600
                 seconds += int(data.get('days', 0)) * 86400
+            elif 'once' in data:
+                once_fmt = data.get('once_fmt', '%Y-%m-%dT%H:%M:%S')
+
+                try:
+                    once = datetime.datetime.strptime(data['once'], once_fmt)
+                    once = int(time.mktime(once.timetuple()))
+                except (TypeError, ValueError):
+                    log.error('Date string could not be parsed: %s, %s',
+                            data['once'], once_fmt)
+                    continue
+
+                if now != once:
+                    continue
+                else:
+                    seconds = 1
+
             elif 'when' in data:
                 if not _WHEN_SUPPORTED:
                     log.error('Missing python-dateutil.'
@@ -794,6 +835,21 @@ class Schedule(object):
                     self.loop_interval = seconds
             run = False
 
+            if 'splay' in data:
+                if 'when' in data:
+                    log.error('Unable to use "splay" with "when" option at this time. Ignoring.')
+                elif 'cron' in data:
+                    log.error('Unable to use "splay" with "cron" option at this time. Ignoring.')
+                else:
+                    if '_seconds' not in data:
+                        log.debug('The _seconds parameter is missing, '
+                                  'most likely the first run or the schedule '
+                                  'has been refreshed refresh.')
+                        if 'seconds' in data:
+                            data['_seconds'] = data['seconds']
+                        else:
+                            data['_seconds'] = 0
+
             if job in self.intervals:
                 if 'when' in data:
                     if seconds == 0:
@@ -807,17 +863,6 @@ class Schedule(object):
                     if now - self.intervals[job] >= seconds:
                         run = True
             else:
-                if 'splay' in data:
-                    if 'when' in data:
-                        log.error('Unable to use "splay" with "when" option at this time. Ignoring.')
-                    elif 'cron' in data:
-                        log.error('Unable to use "splay" with "cron" option at this time. Ignoring.')
-                    else:
-                        if 'seconds' in data:
-                            data['_seconds'] = data['seconds']
-                        else:
-                            data['_seconds'] = 0
-
                 if 'when' in data:
                     if seconds == 0:
                         if data['_when_run']:
@@ -939,10 +984,11 @@ def clean_proc_dir(opts):
         with salt.utils.fopen(fn_, 'rb') as fp_:
             job = None
             try:
-                job_data = fp_.read()
-                if job_data:
-                    job = salt.payload.Serial(opts).load(fp_)
+                job = salt.payload.Serial(opts).load(fp_)
             except Exception:  # It's corrupted
+                # Windows cannot delete an open file
+                if salt.utils.is_windows():
+                    fp_.close()
                 try:
                     os.unlink(fn_)
                     continue

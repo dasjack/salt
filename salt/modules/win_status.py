@@ -6,14 +6,16 @@ These data can be useful for compiling into stats later.
 :depends:   - pythoncom
             - wmi
 '''
-from __future__ import absolute_import
 
-import subprocess
+# Import Python Libs
+from __future__ import absolute_import
 import logging
+
+# Import Salt Libs
 import salt.utils
 import salt.utils.event
+from salt._compat import subprocess
 from salt.utils.network import host_to_ip as _host_to_ip
-
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +104,7 @@ def _get_process_owner(process):
 
 def master(master=None, connected=True):
     '''
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Fire an event if the minion gets disconnected from its master. This
     function is meant to be run via a scheduled job from the minion. If
@@ -137,7 +139,7 @@ def master(master=None, connected=True):
         '''
         remotes = set()
         try:
-            data = subprocess.check_output(['netstat', '-n', '-p', 'TCP'])
+            data = subprocess.check_output(['netstat', '-n', '-p', 'TCP'])  # pylint: disable=minimum-python-version
         except subprocess.CalledProcessError:
             log.error('Failed netstat')
             raise

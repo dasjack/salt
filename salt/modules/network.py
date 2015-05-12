@@ -14,6 +14,7 @@ import socket
 
 # Import salt libs
 import salt.utils
+import salt.utils.decorators as decorators
 import salt.utils.network
 from salt.exceptions import CommandExecutionError
 import salt.utils.validate.net
@@ -75,7 +76,7 @@ def ping(host, timeout=False, return_boolean=False):
 
         salt '*' network.ping archlinux.org
 
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2015.5.0
 
     Return a True or False instead of ping output.
 
@@ -586,6 +587,7 @@ def dig(host):
     return __salt__['cmd.run'](cmd)
 
 
+@decorators.which('arp')
 def arp():
     '''
     Return the arp table from the minion

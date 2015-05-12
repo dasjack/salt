@@ -66,6 +66,7 @@ def store_job(opts, load, event=None, mminion=None):
         return
 
     # otherwise, write to the master cache
+    savefstr = '{0}.save_load'.format(job_cache)
     fstr = '{0}.returner'.format(job_cache)
     if 'fun' not in load and load.get('return', {}):
         ret_ = load.get('return', {})
@@ -74,10 +75,26 @@ def store_job(opts, load, event=None, mminion=None):
         if 'user' in ret_:
             load.update({'user': ret_['user']})
     try:
+        if 'jid' in load:
+            mminion.returners[savefstr](load['jid'], load)
         mminion.returners[fstr](load)
     except KeyError:
         emsg = "Returner '{0}' does not support function returner".format(job_cache)
         log.error(emsg)
         raise KeyError(emsg)
+
+
+def get_retcode(ret):
+    '''
+    Determine a retcode for a given return
+    '''
+    retcode = 0
+    # if there is a dict with retcode, use that
+    if isinstance(ret, dict) and ret.get('retcode', 0) != 0:
+        return ret['retcode']
+    # if its a boolean, False means 1
+    elif isinstance(ret, bool) and not ret:
+        return 1
+    return retcode
 
 # vim:set et sts=4 ts=4 tw=80:

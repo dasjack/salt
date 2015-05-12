@@ -19,6 +19,7 @@ import re
 import platform
 import logging
 import locale
+import salt.exceptions
 
 # Extend the default list of supported distros. This will be used for the
 # /etc/DISTRO-release checking that is part of platform.linux_distribution()
@@ -936,11 +937,22 @@ _OS_FAMILY_MAP = {
 
 def _linux_bin_exists(binary):
     '''
-    Does a binary exist in linux (depends on which)
+    Does a binary exist in linux (depends on which, type, or whereis)
     '''
-    return __salt__['cmd.retcode'](
-        'which {0}'.format(binary)
-    ) == 0
+    for search_cmd in ('which', 'type -ap'):
+        try:
+            return __salt__['cmd.retcode'](
+                '{0} {1}'.format(search_cmd, binary)
+            ) == 0
+        except salt.exceptions.CommandExecutionError:
+            pass
+
+    try:
+        return len(__salt__['cmd.run_stdout'](
+            'whereis -b {0}'.format(binary)
+        ).split()) > 1
+    except salt.exceptions.CommandExecutionError:
+        return False
 
 
 def _get_interfaces():
@@ -976,8 +988,10 @@ def os_data():
     # pylint: enable=unpacking-non-sequence
 
     if salt.utils.is_windows():
-        grains['osrelease'] = grains['kernelrelease']
-        grains['osversion'] = grains['kernelrelease'] = version
+        with salt.utils.winapi.Com():
+            wmi_c = wmi.WMI()
+            grains['osrelease'] = grains['kernelrelease']
+            grains['osversion'] = grains['kernelrelease'] = wmi_c.Win32_OperatingSystem()[0].Version
         grains['os'] = 'Windows'
         grains['os_family'] = 'Windows'
         grains.update(_memdata(grains))
@@ -1041,90 +1055,91 @@ def os_data():
                             grains[
                                 'lsb_{0}'.format(match.groups()[0].lower())
                             ] = match.groups()[1].rstrip()
-            elif os.path.isfile('/etc/os-release'):
-                # Arch ARM Linux
-                with salt.utils.fopen('/etc/os-release') as ifile:
-                    # Imitate lsb-release
-                    for line in ifile:
-                        # NAME="Arch Linux ARM"
-                        # ID=archarm
-                        # ID_LIKE=arch
-                        # PRETTY_NAME="Arch Linux ARM"
-                        # ANSI_COLOR="0;36"
-                        # HOME_URL="http://archlinuxarm.org/"
-                        # SUPPORT_URL="https://archlinuxarm.org/forum"
-                        # BUG_REPORT_URL=
-                        #   "https://github.com/archlinuxarm/PKGBUILDs/issues"
-                        regex = re.compile(
-                            '^([\\w]+)=(?:\'|")?([\\w\\s\\.-_]+)(?:\'|")?'
-                        )
-                        match = regex.match(line.rstrip('\n'))
-                        if match:
-                            name, value = match.groups()
-                            if name.lower() == 'name':
-                                grains['lsb_distrib_id'] = value.strip()
-            elif os.path.isfile('/etc/SuSE-release'):
-                grains['lsb_distrib_id'] = 'SUSE'
-                with salt.utils.fopen('/etc/SuSE-release') as fhr:
-                    rel = re.sub("[^0-9]", "", fhr.read().split('\n')[1])
-                with salt.utils.fopen('/etc/SuSE-release') as fhr:
-                    patch = re.sub("[^0-9]", "", fhr.read().split('\n')[2])
-                release = rel + " SP" + patch
-                grains['lsb_distrib_release'] = release
-                grains['lsb_distrib_codename'] = "n.a"
-            elif os.path.isfile('/etc/altlinux-release'):
-                # ALT Linux
-                grains['lsb_distrib_id'] = 'altlinux'
-                with salt.utils.fopen('/etc/altlinux-release') as ifile:
-                    # This file is symlinked to from:
-                    #     /etc/fedora-release
-                    #     /etc/redhat-release
-                    #     /etc/system-release
-                    for line in ifile:
-                        # ALT Linux Sisyphus (unstable)
-                        comps = line.split()
-                        if comps[0] == 'ALT':
-                            grains['lsb_distrib_release'] = comps[2]
-                            grains['lsb_distrib_codename'] = \
-                                comps[3].replace('(', '').replace(')', '')
-            elif os.path.isfile('/etc/centos-release'):
-                # CentOS Linux
-                grains['lsb_distrib_id'] = 'CentOS'
-                with salt.utils.fopen('/etc/centos-release') as ifile:
-                    for line in ifile:
-                        # Need to pull out the version and codename
-                        # in the case of custom content in /etc/centos-release
-                        find_release = re.compile(r'\d+\.\d+')
-                        find_codename = re.compile(r'(?<=\()(.*?)(?=\))')
-                        release = find_release.search(line)
-                        codename = find_codename.search(line)
-                        if release is not None:
-                            grains['lsb_distrib_release'] = release.group()
-                        if codename is not None:
-                            grains['lsb_distrib_codename'] = codename.group()
-            elif os.path.isfile('/etc.defaults/VERSION') \
-                    and os.path.isfile('/etc.defaults/synoinfo.conf'):
-                grains['osfullname'] = 'Synology'
-                with salt.utils.fopen('/etc.defaults/VERSION', 'r') as fp_:
-                    synoinfo = {}
-                    for line in fp_:
-                        try:
-                            key, val = line.rstrip('\n').split('=')
-                        except ValueError:
-                            continue
-                        if key in ('majorversion', 'minorversion',
-                                   'buildnumber'):
-                            synoinfo[key] = val.strip('"')
-                    if len(synoinfo) != 3:
-                        log.warning(
-                            'Unable to determine Synology version info. '
-                            'Please report this, as it is likely a bug.'
-                        )
-                    else:
-                        grains['osrelease'] = (
-                            '{majorversion}.{minorversion}-{buildnumber}'
-                            .format(**synoinfo)
-                        )
+            if 'lsb_distrib_id' not in grains:
+                if os.path.isfile('/etc/os-release'):
+                    # Arch ARM Linux
+                    with salt.utils.fopen('/etc/os-release') as ifile:
+                        # Imitate lsb-release
+                        for line in ifile:
+                            # NAME="Arch Linux ARM"
+                            # ID=archarm
+                            # ID_LIKE=arch
+                            # PRETTY_NAME="Arch Linux ARM"
+                            # ANSI_COLOR="0;36"
+                            # HOME_URL="http://archlinuxarm.org/"
+                            # SUPPORT_URL="https://archlinuxarm.org/forum"
+                            # BUG_REPORT_URL=
+                            #   "https://github.com/archlinuxarm/PKGBUILDs/issues"
+                            regex = re.compile(
+                                '^([\\w]+)=(?:\'|")?([\\w\\s\\.-_]+)(?:\'|")?'
+                            )
+                            match = regex.match(line.rstrip('\n'))
+                            if match:
+                                name, value = match.groups()
+                                if name.lower() == 'name':
+                                    grains['lsb_distrib_id'] = value.strip()
+                elif os.path.isfile('/etc/SuSE-release'):
+                    grains['lsb_distrib_id'] = 'SUSE'
+                    with salt.utils.fopen('/etc/SuSE-release') as fhr:
+                        rel = re.sub("[^0-9]", "", fhr.read().split('\n')[1])
+                    with salt.utils.fopen('/etc/SuSE-release') as fhr:
+                        patch = re.sub("[^0-9]", "", fhr.read().split('\n')[2])
+                    release = rel + " SP" + patch
+                    grains['lsb_distrib_release'] = release
+                    grains['lsb_distrib_codename'] = "n.a"
+                elif os.path.isfile('/etc/altlinux-release'):
+                    # ALT Linux
+                    grains['lsb_distrib_id'] = 'altlinux'
+                    with salt.utils.fopen('/etc/altlinux-release') as ifile:
+                        # This file is symlinked to from:
+                        #     /etc/fedora-release
+                        #     /etc/redhat-release
+                        #     /etc/system-release
+                        for line in ifile:
+                            # ALT Linux Sisyphus (unstable)
+                            comps = line.split()
+                            if comps[0] == 'ALT':
+                                grains['lsb_distrib_release'] = comps[2]
+                                grains['lsb_distrib_codename'] = \
+                                    comps[3].replace('(', '').replace(')', '')
+                elif os.path.isfile('/etc/centos-release'):
+                    # CentOS Linux
+                    grains['lsb_distrib_id'] = 'CentOS'
+                    with salt.utils.fopen('/etc/centos-release') as ifile:
+                        for line in ifile:
+                            # Need to pull out the version and codename
+                            # in the case of custom content in /etc/centos-release
+                            find_release = re.compile(r'\d+\.\d+')
+                            find_codename = re.compile(r'(?<=\()(.*?)(?=\))')
+                            release = find_release.search(line)
+                            codename = find_codename.search(line)
+                            if release is not None:
+                                grains['lsb_distrib_release'] = release.group()
+                            if codename is not None:
+                                grains['lsb_distrib_codename'] = codename.group()
+                elif os.path.isfile('/etc.defaults/VERSION') \
+                        and os.path.isfile('/etc.defaults/synoinfo.conf'):
+                    grains['osfullname'] = 'Synology'
+                    with salt.utils.fopen('/etc.defaults/VERSION', 'r') as fp_:
+                        synoinfo = {}
+                        for line in fp_:
+                            try:
+                                key, val = line.rstrip('\n').split('=')
+                            except ValueError:
+                                continue
+                            if key in ('majorversion', 'minorversion',
+                                       'buildnumber'):
+                                synoinfo[key] = val.strip('"')
+                        if len(synoinfo) != 3:
+                            log.warning(
+                                'Unable to determine Synology version info. '
+                                'Please report this, as it is likely a bug.'
+                            )
+                        else:
+                            grains['osrelease'] = (
+                                '{majorversion}.{minorversion}-{buildnumber}'
+                                .format(**synoinfo)
+                            )
 
         # Use the already intelligent platform module to get distro info
         # (though apparently it's not intelligent enough to strip quotes)
@@ -1576,11 +1591,17 @@ def _dmidecode_data(regex_dict):
         return {}
 
     # No use running if dmidecode/smbios isn't in the path
-    if salt.utils.which('dmidecode'):
-        out = __salt__['cmd.run']('dmidecode')
-    elif salt.utils.which('smbios'):
-        out = __salt__['cmd.run']('smbios')
-    else:
+    no_dmidecode = False
+    try:
+        if salt.utils.which('dmidecode'):
+            out = __salt__['cmd.run']('dmidecode')
+        elif salt.utils.which('smbios'):
+            out = __salt__['cmd.run']('smbios')
+        else:
+            no_dmidecode = True
+    except (salt.exceptions.CommandExecutionError,) as exc:
+        no_dmidecode = True
+    if no_dmidecode:
         log.debug(
             'The `dmidecode` binary is not available on the system. GPU '
             'grains will not be available.'

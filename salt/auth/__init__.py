@@ -92,8 +92,8 @@ class LoadAuth(object):
                 return self.auth[fstr](*fcall['args'], **fcall['kwargs'])
             else:
                 return self.auth[fstr](*fcall['args'])
-        except Exception:
-            err = 'Authentication module threw an exception. Exception not logged.'
+        except Exception as e:
+            log.debug('Authentication module threw {0}'.format(e))
             return False
 
     def time_auth(self, load):
@@ -158,6 +158,10 @@ class LoadAuth(object):
                  'name': fcall['args'][0],
                  'eauth': load['eauth'],
                  'token': tok}
+
+        if 'groups' in load:
+            tdata['groups'] = load['groups']
+
         with salt.utils.fopen(t_path, 'w+b') as fp_:
             fp_.write(self.serial.dumps(tdata))
         return tdata

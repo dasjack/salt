@@ -43,10 +43,9 @@ string will be the contents of the managed file. For example:
 
 .. note::
 
-    When using both the ``defaults`` and ``context`` arguments, note the extra
-    indentation (four spaces instead of the normal two). This is due to an
-    idiosyncrasy of how PyYAML loads nested dictionaries, and is explained in
-    greater detail :ref:`here <nested-dict-indentation>`.
+    The ``defaults`` and ``context`` arguments require extra indentation (four
+    spaces instead of the normal two) in order to create a nested dictionary.
+    :ref:`More information <nested-dict-indentation>`.
 
 If using a template, any user-defined template variables in the file defined in
 ``source`` must be passed in using the ``defaults`` and/or ``context``
@@ -236,6 +235,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import difflib
+import itertools
 import json
 import logging
 import os
@@ -276,7 +276,8 @@ def _load_accumulators():
             with open(path, 'rb') as f:
                 loaded = serial.load(f)
                 return loaded if loaded else ret
-        except IOError:
+        except (IOError, NameError):
+            # NameError is a msgpack error from salt-ssh
             return ret
 
     loaded = _deserialize(_get_accumulator_filepath())
@@ -290,8 +291,12 @@ def _persist_accummulators(accumulators, accumulators_deps):
                    'accumulators_deps': accumulators_deps}
 
     serial = salt.payload.Serial(__opts__)
-    with open(_get_accumulator_filepath(), 'w+b') as f:
-        serial.dump(accumm_data, f)
+    try:
+        with open(_get_accumulator_filepath(), 'w+b') as f:
+            serial.dump(accumm_data, f)
+    except NameError:
+        # msgpack error from salt-ssh
+        pass
 
 
 def _check_user(user, group):
@@ -315,9 +320,19 @@ def _gen_keep_files(name, require):
     Generate the list of files that need to be kept when a dir based function
     like directory or recurse has a clean.
     '''
+    def _is_child(path, directory):
+        '''
+        Check whether ``path`` is child of ``directory``
+        '''
+        path = os.path.realpath(path)
+        directory = os.path.realpath(directory)
+
+        relative = os.path.relpath(path, directory)
+
+        return not relative.startswith(os.pardir)
+
     def _process(name):
         ret = set()
-        ret.add(name.rstrip('/'))
         if os.path.isdir(name):
             for root, dirs, files in os.walk(name):
                 for name in files:
@@ -325,16 +340,19 @@ def _gen_keep_files(name, require):
                 for name in dirs:
                     ret.add(os.path.join(root, name))
         return ret
+
     keep = set()
-    # Remove last slash if exists for all path
-    keep.add(name.rstrip('/'))
     if isinstance(require, list):
-        for comp in require:
-            if 'file' in comp:
-                keep.update(_process(comp['file']))
-                for low in __lowstate__:
-                    if low['__id__'] == comp['file']:
-                        keep.update(_process(low['name']))
+        required_files = [comp for comp in require if 'file' in comp]
+        for comp in required_files:
+            for low in __lowstate__:
+                if low['__id__'] == comp['file']:
+                    fn = low['name']
+                    if os.path.isdir(comp['file']):
+                        if _is_child(comp['file'], name):
+                            keep.update(_process(fn))
+                    else:
+                        keep.add(fn)
     return list(keep)
 
 
@@ -371,35 +389,23 @@ def _clean_dir(root, keep, exclude_pat):
                 if fn_ in ['/', ''.join([os.path.splitdrive(fn_)[0], '\\'])]:
                     break
 
-    for roots, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if os.path.join(root, d) not in keep]
-        for name in dirs:
-            nfn = os.path.join(roots, name)
-            if os.path.islink(nfn):
-                # the "directory" is in fact a symlink and cannot be
-                # removed by shutil.rmtree
-                files.append(nfn)
-                continue
-            if nfn not in real_keep:
-                # -- check if this is a part of exclude_pat(only). No need to
-                # check include_pat
-                if not salt.utils.check_include_exclude(
-                        nfn[len(root) + 1:], None, exclude_pat):
-                    continue
-                removed.add(nfn)
-                if not __opts__['test']:
-                    shutil.rmtree(nfn)
-        for name in files:
-            nfn = os.path.join(roots, name)
-            if nfn not in real_keep:
-                # -- check if this is a part of exclude_pat(only). No need to
-                # check include_pat
-                if not salt.utils.check_include_exclude(
-                        nfn[len(root) + 1:], None, exclude_pat):
-                    continue
-                removed.add(nfn)
-                if not __opts__['test']:
+    def _delete_not_kept(nfn):
+        if nfn not in real_keep:
+            # -- check if this is a part of exclude_pat(only). No need to
+            # check include_pat
+            if not salt.utils.check_include_exclude(
+                    os.path.relpath(nfn, root), None, exclude_pat):
+                return
+            removed.add(nfn)
+            if not __opts__['test']:
+                try:
                     os.remove(nfn)
+                except OSError:
+                    shutil.rmtree(nfn)
+
+    for roots, dirs, files in os.walk(root):
+        for name in itertools.chain(dirs, files):
+            _delete_not_kept(os.path.join(roots, name))
     return list(removed)
 
 
@@ -482,26 +488,23 @@ def _check_directory(name,
             changes[name] = fchange
     if clean:
         keep = _gen_keep_files(name, require)
+
+        def _check_changes(fname):
+            path = os.path.join(root, fname)
+            if path in keep:
+                return {}
+            else:
+                if not salt.utils.check_include_exclude(
+                        os.path.relpath(path, name), None, exclude_pat):
+                    return {}
+                else:
+                    return {path: {'removed': 'Removed due to clean'}}
+
         for root, dirs, files in os.walk(name):
             for fname in files:
-                fchange = {}
-                path = os.path.join(root, fname)
-                if path not in keep:
-                    if not salt.utils.check_include_exclude(
-                            path[len(name) + 1:], None, exclude_pat):
-                        continue
-                    fchange['removed'] = 'Removed due to clean'
-                    changes[path] = fchange
-            dirs[:] = [d for d in dirs if os.path.join(root, d) not in keep]
+                changes.update(_check_changes(fname))
             for name_ in dirs:
-                fchange = {}
-                path = os.path.join(root, name_)
-                if path not in keep:
-                    if not salt.utils.check_include_exclude(
-                            path[len(name) + 1:], None, exclude_pat):
-                        continue
-                    fchange['removed'] = 'Removed due to clean'
-                    changes[path] = fchange
+                changes.update(_check_changes(name_))
 
     if not os.path.isdir(name):
         changes[name] = {'directory': 'new'}
@@ -1402,14 +1405,12 @@ def managed(name,
                 contents,
                 **kwargs
             )
-            if not ret['changes']:
-                ret['result'] = True
-            else:
-                ret['result'] = None
 
             if ret['changes']:
+                ret['result'] = None
                 ret['comment'] = 'The file {0} is set to be changed'.format(name)
             else:
+                ret['result'] = True
                 ret['comment'] = 'The file {0} is in the correct state'.format(name)
 
             return ret
@@ -1494,6 +1495,10 @@ def managed(name,
             if isinstance(cret, dict):
                 ret.update(cret)
                 return ret
+            # Since we generated a new tempfile and we are not returning here
+            # lets change the original sfn to the new tempfile or else we will
+            # get file not found
+            sfn = tmp_filename
         else:
             ret = {'changes': {},
                    'comment': '',
@@ -1605,7 +1610,7 @@ def directory(name,
                     - mode
                     - ignore_dirs
 
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
     dir_mode / mode
         The permissions mode to set any directories created. Not supported on
@@ -1868,6 +1873,8 @@ def directory(name,
 
     if clean:
         keep = _gen_keep_files(name, require)
+        log.debug('List of kept files when use file.directory with clean: %s',
+                  keep)
         removed = _clean_dir(name, list(keep), exclude_pat)
         if removed:
             ret['changes']['removed'] = removed
@@ -2148,7 +2155,7 @@ def recurse(name,
             ret['changes'][path] = _ret['changes']
 
     def manage_file(path, source):
-        source = '{0}|{1}'.format(source[:7], source[7:])
+        source = u'{0}|{1}'.format(source[:7], source[7:])
         if clean and os.path.exists(path) and os.path.isdir(path):
             _ret = {'name': name, 'changes': {}, 'result': True, 'comment': ''}
             if __opts__['test']:
@@ -2303,7 +2310,7 @@ def recurse(name,
             manage_directory(dirname)
             vdir.add(dirname)
 
-        src = 'salt://{0}'.format(fn_)
+        src = u'salt://{0}'.format(fn_)
         manage_file(dest, src)
 
     if include_empty:
@@ -2343,7 +2350,7 @@ def recurse(name,
 
     # Flatten comments until salt command line client learns
     # to display structured comments in a readable fashion
-    ret['comment'] = '\n'.join('\n#### {0} ####\n{1}'.format(
+    ret['comment'] = '\n'.join(u'\n#### {0} ####\n{1}'.format(
         k, v if isinstance(v, string_types) else '\n'.join(v)
     ) for (k, v) in six.iteritems(ret['comment'])).strip()
 
@@ -2370,16 +2377,64 @@ def replace(name,
             backup='.bak',
             show_changes=True):
     r'''
-    Maintain an edit in a file
+    Maintain an edit in a file.
 
     .. versionadded:: 0.17.0
 
-    Params are identical to the remote execution function :mod:`file.replace
-    <salt.modules.file.replace>`.
+    name
+        Filesystem path to the file to be edited.
 
-    For complex regex patterns it can be useful to avoid the need for complex
-    quoting and escape sequences by making use of YAML's multiline string
-    syntax.
+    pattern
+        Python's `regular expression search<https://docs.python.org/2/library/re.html>`_.
+
+    repl
+        The replacement text.
+
+    count
+        Maximum number of pattern occurrences to be replaced.
+
+    flags
+        A list of flags defined in the :ref:`re module documentation <contents-of-module-re>`.
+        Each list item should be a string that will correlate to the human-friendly flag name.
+        E.g., ``['IGNORECASE', 'MULTILINE']``. Note: multiline searches must specify ``file``
+        as the ``bufsize`` argument below. Defaults to 0 and can be a list or an int.
+
+    bufsize
+        How much of the file to buffer into memory at once. The default value ``1`` processes
+        one line at a time. The special value ``file`` may be specified which will read the
+        entire file into memory before processing. Note: multiline searches must specify ``file``
+        buffering. Can be an int or a str.
+
+    append_if_not_found
+        If pattern is not found and set to ``True`` then, the content will be appended to the file.
+
+        .. versionadded:: 2014.7.0
+
+    prepend_if_not_found
+        If pattern is not found and set to ``True`` then, the content will be prepended to the file.
+
+        .. versionadded:: 2014.7.0
+
+    not_found_content
+        Content to use for append/prepend if not found. If ``None`` (default), uses ``repl``. Useful
+        when ``repl``  uses references to group in pattern.
+
+        .. versionadded:: 2014.7.0
+
+    backup
+        The file extension to use for a backup of the file before editing. Set to ``False`` to skip
+        making a backup.
+
+    show_changes
+        Output a unified diff of the old file and the new file. If ``False`` return a boolean if any
+        changes were made. Returns a boolean or a string.
+
+        .. note:
+            Using this option will store two copies of the file in-memory (the original version and
+            the edited version) in order to generate the diff.
+
+    For complex regex patterns it can be useful to avoid the need for complex quoting and escape
+    sequences by making use of YAML's multiline string syntax.
 
     .. code-block:: yaml
 
@@ -2413,13 +2468,13 @@ def replace(name,
                                        show_changes=show_changes)
 
     if changes:
-        ret['changes'] = {'diff': changes}
         if __opts__['test']:
             ret['result'] = None
-            ret['comment'] = 'Changes would have been made'
+            ret['comment'] = 'Changes would have been made:\ndiff:\n{0}'.format(changes)
         else:
             ret['result'] = True
             ret['comment'] = 'Changes were made'
+            ret['changes'] = {'diff': changes}
     else:
         ret['result'] = True
         ret['comment'] = 'No changes needed to be made'
@@ -3441,35 +3496,35 @@ def copy(
         If the target subdirectories don't exist create them
 
     preserve
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
         Set ``preserve: True`` to preserve user/group ownership and mode
         after copying. Default is ``False``. If ``preseve`` is set to ``True``,
         then user/group/mode attributes will be ignored.
 
     user
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
         The user to own the copied file, this defaults to the user salt is
         running as on the minion. If ``preserve`` is set to ``True``, then
         this will be ignored
 
     group
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
         The group to own the copied file, this defaults to the group salt is
         running as on the minion. If ``preserve`` is set to ``True`` or on
         Windows this will be ignored
 
     mode
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
         The permissions to set on the copied file, aka 644, '0775', '4664'.
         If ``preserve`` is set to ``True``, then this will be ignored.
         Not supported on Windows
 
     subdir
-        .. versionadded:: 2015.2.0
+        .. versionadded:: 2015.5.0
 
         If the name is a directory then place the file inside the named
         directory
@@ -3823,7 +3878,8 @@ def _merge_dict(obj, k, v):
 
 
 def serialize(name,
-              dataset,
+              dataset=None,
+              dataset_pillar=None,
               user=None,
               group=None,
               mode=None,
@@ -3842,7 +3898,17 @@ def serialize(name,
         The location of the file to create
 
     dataset
-        the dataset that will be serialized
+        The dataset that will be serialized
+
+    dataset_pillar
+        Operates like ``dataset``, but draws from a value stored in pillar,
+        using the pillar path syntax used in :mod:`pillar.get
+        <salt.modules.pillar.get>`. This is useful when the pillar value
+        contains newlines, as referencing a pillar variable using a jinja/mako
+        template can result in YAML formatting issues due to the newlines
+        causing indentation mismatches.
+
+        .. versionadded:: FIXME
 
     formatter
         Write the data as this format. Supported output formats:
@@ -3943,6 +4009,17 @@ def serialize(name,
             return ret
 
     formatter = kwargs.pop('formatter', 'yaml').lower()
+
+    if len([_f for _f in [dataset, dataset_pillar] if _f]) > 1:
+        return _error(
+            ret, 'Only one of \'dataset\' and \'dataset_pillar\' is permitted')
+
+    if dataset_pillar:
+        dataset = __salt__['pillar.get'](dataset_pillar)
+
+    if dataset is None:
+        return _error(
+            ret, 'Neither \'dataset\' nor \'dataset_pillar\' was defined')
 
     if merge_if_exists:
         if os.path.isfile(name):

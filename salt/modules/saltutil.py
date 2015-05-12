@@ -42,6 +42,7 @@ import salt.payload
 import salt.state
 import salt.client
 import salt.client.ssh.client
+import salt.config
 import salt.runner
 import salt.utils
 import salt.utils.process
@@ -152,7 +153,7 @@ def _sync(form, saltenv=None):
                 break
             for emptydir in emptydirs:
                 touched = True
-                os.rmdir(emptydir)
+                shutil.rmtree(emptydir, ignore_errors=True)
     # Dest mod_dir is touched? trigger reload if requested
     if touched:
         mod_file = os.path.join(__opts__['cachedir'], 'module_refresh')
@@ -537,7 +538,11 @@ def find_cached_job(jid):
         buf = fp_.read()
         fp_.close()
         if buf:
-            data = serial.loads(buf)
+            try:
+                data = serial.loads(buf)
+            except NameError:
+                # msgpack error in salt-ssh
+                return
         else:
             return
     if not isinstance(data, dict):
@@ -765,7 +770,16 @@ def runner(fun, **kwargs):
 
         salt '*' saltutil.runner jobs.list_jobs
     '''
-    rclient = salt.runner.RunnerClient(__opts__)
+    kwargs = salt.utils.clean_kwargs(**kwargs)
+
+    if 'master_job_cache' not in __opts__:
+        master_config = os.path.join(os.path.dirname(__opts__['conf_file']),
+                                     'master')
+        master_opts = salt.config.master_config(master_config)
+        rclient = salt.runner.RunnerClient(master_opts)
+    else:
+        rclient = salt.runner.RunnerClient(__opts__)
+
     return rclient.cmd(fun, [], kwarg=kwargs)
 
 
@@ -787,7 +801,7 @@ def wheel(fun, **kwargs):
         salt '*' saltutil.wheel key.accept match=jerry
     '''
     wclient = salt.wheel.WheelClient(__opts__)
-    return wclient.cmd(fun, **kwargs)
+    return wclient.cmd(fun, kwarg=kwargs)
 
 
 # this is the only way I could figure out how to get the REAL file_roots
